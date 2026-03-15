@@ -1,0 +1,27 @@
+"""
+config.py
+---------
+Loads all environment variables from the .env file and exports them
+as module-level constants for use across the application.
+
+Do NOT hardcode any credentials here — always use the .env file.
+"""
+
+import os
+from dotenv import load_dotenv
+
+# Load variables from backend/.env into the environment
+load_dotenv()
+
+# ── Google Gemini ──────────────────────────────────────────────────────────────
+GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+
+# ── TiDB Cloud / MySQL Database ────────────────────────────────────────────────
+DB_HOST: str     = os.getenv("DB_HOST", "localhost")
+DB_PORT: int     = int(os.getenv("DB_PORT", "4000"))
+DB_USER: str     = os.getenv("DB_USER", "root")
+DB_PASSWORD: str = os.getenv("DB_PASSWORD", "")
+DB_NAME: str     = os.getenv("DB_NAME", "sql_agent_demo")
+
+# Path to the TiDB Cloud SSL CA certificate file (download from TiDB console)
+DB_CA_CERT: str  = os.getenv("DB_CA_CERT", "")
