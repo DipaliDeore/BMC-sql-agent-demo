@@ -124,7 +124,7 @@ def generate_sql_and_explanation(question: str, schema: str) -> dict:
     # Step 2: Initialize the Gemini model
     # ------------------------------------------------------------------
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
+        model="gemini-flash-latest",
         google_api_key=config.GEMINI_API_KEY,
         temperature=0,          # Low temperature = more deterministic/consistent
     )
