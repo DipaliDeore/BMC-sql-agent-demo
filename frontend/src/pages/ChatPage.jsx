@@ -55,6 +55,7 @@ export default function ChatPage({ theme, toggleTheme }) {
         results: data.results,
         explanation: data.explanation,
         row_count: data.row_count,
+        result_sentence: data.result_sentence ?? null,
       };
 
       // Add assistant message to the chat
