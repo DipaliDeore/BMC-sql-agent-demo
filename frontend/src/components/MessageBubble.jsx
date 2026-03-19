@@ -8,19 +8,17 @@
  *   - Plain text of the question
  *   - Subtle background
  *
- * Assistant messages:
- *   - Aligned left
- *   - 4 sections in order:
- *     1. Explanation (plain text)
- *     2. Results Table
- *     3. SQL Query (with syntax highlighting)
- *     4. Row Count
+ * Assistant messages (STRICT response rules):
+ *   - Single value (COUNT/SUM/AVG): natural language sentence only, NO table, NO column names
+ *   - Multiple rows/columns: tabular format
+ *   - Executed Query always at the end
+ *   Order: Explanation → (sentence OR table) → Executed Query
  *
  * Error messages:
  *   - Shows "Something went wrong. Please try again."
  *
  * Props:
- *   message  {Object}  Message object with: role, content, sql, results, explanation, row_count, error
+ *   message  {Object}  Message object with: role, content, sql, results, explanation, row_count, result_sentence, error
  *   theme    {string}  "dark" or "light"
  */
 
@@ -106,25 +104,28 @@ export default function MessageBubble({ message, theme }) {
           </div>
         )}
 
-        {/* Section 2: Results Table — only shown when there are results */}
-        {message.results && message.results.length > 0 && (
+        {/* Section 2: Single value = natural language sentence only. Multiple rows/columns = table */}
+        {message.result_sentence && (
+          <div style={{ marginBottom: "14px" }}>
+            <p style={{ fontSize: "15px", lineHeight: "1.6", fontWeight: 500 }}>
+              {message.result_sentence}
+            </p>
+          </div>
+        )}
+        {!message.result_sentence && message.results && message.results.length > 0 && (
           <div style={{ marginBottom: "14px" }}>
             <ResultTable results={message.results} theme={theme} />
           </div>
         )}
 
-        {/* Section 3: SQL Query */}
+        {/* Section 3: Executed Query — always at the end */}
         {message.sql && (
-          <div style={{ marginBottom: "14px" }}>
+          <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: `1px solid ${borderColor}` }}>
+            <p style={{ fontSize: "12px", color: mutedText, marginBottom: "6px", fontWeight: 600 }}>
+              Executed Query:
+            </p>
             <SqlViewer sql={message.sql} theme={theme} />
           </div>
-        )}
-
-        {/* Section 4: Row Count — only shown when there are results */}
-        {message.results && message.results.length > 0 && (
-          <p style={{ fontSize: "13px", color: mutedText }}>
-            Rows returned: {message.row_count ?? 0}
-          </p>
         )}
       </div>
     </div>

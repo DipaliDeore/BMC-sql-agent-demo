@@ -57,20 +57,37 @@ The server will start at **http://localhost:8000**.
 | `DB_USER` | Database username |
 | `DB_PASSWORD` | Database password |
 | `DB_NAME` | Database name |
+| `PINECONE_API_KEY` | Pinecone API key (optional; for semantic cache) |
+| `PINECONE_INDEX_NAME` | Pinecone index name (default: `sql-agent-cache`) |
+| `OPENAI_API_KEY` | OpenAI API key (optional; for embeddings used by Pinecone cache) |
+
+## Semantic cache (Pinecone)
+
+If `PINECONE_API_KEY` and `OPENAI_API_KEY` are set, the app uses **Pinecone** as a semantic cache:
+
+- **Before** calling the AI, it looks up a similar past question in Pinecone (embedding similarity).
+- If a similar question is found with score &gt; 0.85, the cached SQL is reused (no Gemini call).
+- After each **new** successful query, the (question, SQL) pair is stored in Pinecone for future hits.
+
+This reduces latency and API usage for repeated or paraphrased questions. If either key is missing, the cache is skipped and all queries go through Gemini as before.
 
 ## File Structure
 
 ```
 backend/
 ├── app/
-│   ├── __init__.py       # Package marker
-│   ├── main.py           # FastAPI app, CORS, entry point
-│   ├── config.py         # Loads .env variables
-│   ├── database.py       # DB connection, query execution, schema retrieval
-│   ├── sql_generator.py  # LangChain + Gemini → SQL
-│   ├── query_validator.py# Safety checks (SELECT-only, no injection)
-│   └── routes.py         # API route definitions
-├── .env                  # Secret credentials (do NOT commit)
-├── requirements.txt      # Python dependencies
-└── README.md             # This file
+│   ├── __init__.py         # Package marker
+│   ├── main.py             # FastAPI app, CORS, entry point
+│   ├── config.py           # Loads .env variables
+│   ├── database.py         # DB connection, query execution, schema retrieval
+│   ├── sql_generator.py    # LangChain + Gemini → SQL
+│   ├── query_validator.py  # Safety checks (SELECT-only, no injection)
+│   ├── routes.py           # API route definitions
+│   ├── pinecone_client.py  # Pinecone client and index (semantic cache)
+│   ├── embedding.py        # OpenAI text-embedding-3-small embeddings
+│   ├── store.py            # Store question + SQL in Pinecone
+│   └── search.py           # Find similar query in Pinecone
+├── .env                    # Secret credentials (do NOT commit)
+├── requirements.txt        # Python dependencies
+└── README.md               # This file
 ```

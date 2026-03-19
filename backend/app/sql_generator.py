@@ -13,8 +13,8 @@ Main function:
 import json
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import PromptTemplate
-from langchain.schema.output_parser import StrOutputParser
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 
 from app import config
 
@@ -68,10 +68,13 @@ RULES:
 * If the question has NO relation to the database schema provided, do NOT generate any SQL query. Instead return this exact JSON:
   {{"sql_query": "NOT_RELATED", "explanation": "This question cannot be answered using the available database. Please ask a question related to customers, products, orders, or order items."}}
 
+* If the query returns a SINGLE VALUE (e.g. COUNT, SUM, AVG, MIN, MAX — one row, one number), also include "answer_template": a natural language sentence with exactly one placeholder {{}} where the result will be inserted. Example: "Total number of customers are {{}}." or "Last month total sales are {{}}."
+
 You must respond in ONLY this exact JSON format, nothing else:
 {{
   "sql_query": "your SELECT query here",
-  "explanation": "2-3 line simple explanation in plain English"
+  "explanation": "2-3 line simple explanation in plain English",
+  "answer_template": "Optional: one sentence with {{}} for the single result value, only for COUNT/SUM/AVG-style queries"
 }}
 
 Do not add any text before or after the JSON.
@@ -181,9 +184,12 @@ def generate_sql_and_explanation(question: str, schema: str) -> dict:
         )
 
     # ------------------------------------------------------------------
-    # Step 8: Return the final result
+    # Step 8: Return the final result (answer_template optional for single-value queries)
     # ------------------------------------------------------------------
-    return {
+    out = {
         "sql_query":   parsed["sql_query"],
         "explanation": parsed["explanation"],
     }
+    if "answer_template" in parsed and parsed["answer_template"]:
+        out["answer_template"] = parsed["answer_template"]
+    return out
