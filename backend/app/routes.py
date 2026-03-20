@@ -17,6 +17,8 @@ from pydantic import BaseModel
 from app.database import execute_query, get_database_schema
 from app.sql_generator import generate_sql_and_explanation, is_dangerous_input
 from app.query_validator import validate_sql, QueryValidationError
+from app.search import find_similar_query
+from app.store import store_query
 
 
 # ── Create API Router ─────────────────────────────────────────────────────────
@@ -39,6 +41,55 @@ class QueryResponse(BaseModel):
     results: list[dict]  # Rows returned from the database
     explanation: str     # Plain-English explanation of the SQL query
     row_count: int       # Number of rows returned
+    result_summary: str | None = None  # Deprecated: use result_sentence for single-value
+    result_sentence: str | None = None  # Natural language sentence for single value (e.g. "Total number of customers are 10")
+
+
+def _format_single_value(val) -> str:
+    """Format a single value for display (no column names)."""
+    if val is None:
+        return "—"
+    if isinstance(val, bool):
+        return str(val)
+    if isinstance(val, (int, float)):
+        return f"{val:,.2f}" if isinstance(val, float) else f"{val:,}"
+    try:
+        v = float(val)
+        return f"{v:,.2f}" if v != int(v) else f"{int(v):,}"
+    except (TypeError, ValueError):
+        return str(val)
+
+
+def _build_result_sentence(results: list[dict], answer_template: str | None = None) -> str | None:
+    """Return a natural language sentence ONLY when result is a single value (1 row, 1 column)."""
+    if not results or len(results) != 1:
+        return None
+    row = results[0]
+    if not row or len(row) != 1:
+        return None
+    val = next(iter(row.values()))
+    formatted = _format_single_value(val)
+    if answer_template and "{}" in answer_template:
+        try:
+            return answer_template.replace("{}", formatted, 1)
+        except Exception:
+            pass
+    return f"The result is {formatted}."
+
+
+def _build_result_summary(results: list[dict]) -> str | None:
+    """Build summary for single-row multi-column (tabular case). Not used for single-value."""
+    if not results or len(results) != 1:
+        return None
+    row = results[0]
+    if not row or len(row) == 1:
+        return None  # Single value -> use result_sentence instead
+    parts = []
+    for key, val in row.items():
+        s = _format_single_value(val)
+        label = key.replace("SUM(", "").replace(")", "").replace("(", " ").strip() or key
+        parts.append(f"{label}: {s}")
+    return " · ".join(parts)
 
 
 # ── Endpoint 1: Test Database Connection ──────────────────────────────────────
@@ -121,6 +172,43 @@ async def handle_query(body: QueryRequest):
             row_count=0
         )
 
+    # ── Semantic cache: check Pinecone for a similar question first ─────────────
+    # If we find a cached (question, sql) pair with similarity score > 0.85,
+    # we reuse the SQL instead of calling the AI. Cache is optional; if Pinecone
+    # or OpenAI is unavailable, find_similar_query returns None and we fall back to AI.
+    sql_cached = find_similar_query(body.question)
+    if sql_cached:
+        try:
+            safe_sql = validate_sql(sql_cached)
+        except QueryValidationError:
+            # Cached SQL failed validation (e.g. schema changed); fall through to AI
+            sql_cached = None
+        else:
+            result = execute_query(safe_sql)
+            if isinstance(result, dict) and "error" in result:
+                # Execution failed; fall through to AI to generate fresh SQL
+                sql_cached = None
+            else:
+                # Cache hit: use cached SQL and return (do not store again)
+                if not result:
+                    return QueryResponse(
+                        question=body.question,
+                        sql=safe_sql,
+                        results=[],
+                        explanation="No records found for your query.",
+                        row_count=0,
+                    )
+                return QueryResponse(
+                    question=body.question,
+                    sql=safe_sql,
+                    results=result,
+                    explanation="This query was answered using a similar cached question.",
+                    row_count=len(result),
+                    result_sentence=_build_result_sentence(result),
+                    result_summary=_build_result_summary(result),
+                )
+
+    # ── No cache hit: generate SQL via AI (existing flow) ────────────────────────
     # Step 1: Get the database schema to give the AI context
     schema = get_database_schema()
 
@@ -197,8 +285,13 @@ async def handle_query(body: QueryRequest):
             row_count=0,
         )
 
-    # Step 5: Calculate row count and return the full response
+    # Step 5: Store this (question, sql) pair in Pinecone for future semantic cache hits
+    # Only store after successful execution so the cache always contains valid pairs.
+    store_query(body.question, safe_sql)
+
+    # Step 6: Build result_sentence (use AI answer_template for single value if provided)
     row_count = len(result)
+    answer_template = ai_result.get("answer_template")
 
     return QueryResponse(
         question=body.question,
@@ -206,4 +299,6 @@ async def handle_query(body: QueryRequest):
         results=result,
         explanation=explanation,
         row_count=row_count,
+        result_sentence=_build_result_sentence(result, answer_template),
+        result_summary=_build_result_summary(result),
     )
