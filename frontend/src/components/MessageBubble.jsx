@@ -138,13 +138,8 @@ export default function MessageBubble({ message, theme }) {
           </div>
         )}
 
-        {/* Section 3: Executed Query — always at the end */}
-        {/* Section 3: Executed Query — always at the end */}
+        {/* Section 3: Executed Query — fixed nesting here */}
         {message.sql && (
-          <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: `1px solid ${borderColor}` }}>
-            <p style={{ fontSize: "12px", color: mutedText, marginBottom: "6px", fontWeight: 600 }}>
-              Executed Query:
-            </p>
           <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: `1px solid ${borderColor}` }}>
             <p style={{ fontSize: "12px", color: mutedText, marginBottom: "6px", fontWeight: 600 }}>
               Executed Query:
