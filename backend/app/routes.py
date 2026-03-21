@@ -277,7 +277,13 @@ async def handle_query(body: QueryRequest):
     store_query(body.question, safe_sql)
 
     # Step 6: Build result_sentence (use AI answer_template for single value if provided)
+    # Step 5: Store this (question, sql) pair in Pinecone for future semantic cache hits
+    # Only store after successful execution so the cache always contains valid pairs.
+    store_query(body.question, safe_sql)
+
+    # Step 6: Build result_sentence (use AI answer_template for single value if provided)
     row_count = len(result)
+    answer_template = ai_result.get("answer_template")
     answer_template = ai_result.get("answer_template")
 
     return QueryResponse(

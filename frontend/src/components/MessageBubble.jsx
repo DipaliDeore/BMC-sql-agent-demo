@@ -13,11 +13,17 @@
  *   - Multiple rows/columns: tabular format
  *   - Executed Query always at the end
  *   Order: Explanation → (sentence OR table) → Executed Query
+ * Assistant messages (STRICT response rules):
+ *   - Single value (COUNT/SUM/AVG): natural language sentence only, NO table, NO column names
+ *   - Multiple rows/columns: tabular format
+ *   - Executed Query always at the end
+ *   Order: Explanation → (sentence OR table) → Executed Query
  *
  * Error messages:
  *   - Shows "Something went wrong. Please try again."
  *
  * Props:
+ *   message  {Object}  Message object with: role, content, sql, results, explanation, row_count, result_sentence, error
  *   message  {Object}  Message object with: role, content, sql, results, explanation, row_count, result_sentence, error
  *   theme    {string}  "dark" or "light"
  */
@@ -133,7 +139,12 @@ export default function MessageBubble({ message, theme }) {
         )}
 
         {/* Section 3: Executed Query — always at the end */}
+        {/* Section 3: Executed Query — always at the end */}
         {message.sql && (
+          <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: `1px solid ${borderColor}` }}>
+            <p style={{ fontSize: "12px", color: mutedText, marginBottom: "6px", fontWeight: 600 }}>
+              Executed Query:
+            </p>
           <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: `1px solid ${borderColor}` }}>
             <p style={{ fontSize: "12px", color: mutedText, marginBottom: "6px", fontWeight: 600 }}>
               Executed Query:

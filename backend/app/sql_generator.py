@@ -68,9 +68,12 @@ RULES:
 * If the question has NO relation to the database schema provided, do NOT generate any SQL query. Instead return this exact JSON:
   {{"sql_query": "NOT_RELATED", "explanation": "This question cannot be answered using the available database. Please ask a question related to customers, products, orders, or order items."}}
 
+<<<<<<< HEAD
 Reference Examples (similar past question and their safe SQL; use as guidance only, do NOT copy verbatim):
 {references}
 
+=======
+>>>>>>> origin/pineconeIntegration
 * If the query returns a SINGLE VALUE (e.g. COUNT, SUM, AVG, MIN, MAX — one row, one number), also include "answer_template": a natural language sentence with exactly one placeholder {{}} where the result will be inserted. Example: "Total number of customers are {{}}." or "Last month total sales are {{}}."
 
 You must respond in ONLY this exact JSON format, nothing else:
