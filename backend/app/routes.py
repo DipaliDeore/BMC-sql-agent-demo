@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from app.database import execute_query, get_database_schema
 from app.sql_generator import generate_sql_and_explanation, is_dangerous_input
 from app.query_validator import validate_sql, QueryValidationError
-from app.search import find_similar_query
+from app.search import find_similar_queries
 from app.store import store_query
 
 
@@ -43,6 +43,9 @@ class QueryResponse(BaseModel):
     row_count: int       # Number of rows returned
     result_summary: str | None = None  # Deprecated: use result_sentence for single-value
     result_sentence: str | None = None  # Natural language sentence for single value (e.g. "Total number of customers are 10")
+    # Optional debug info to show what Pinecone retrieval returned.
+    # This does not affect the main logic.
+    cache_references: list[dict] | None = None
 
 
 def _format_single_value(val) -> str:
@@ -172,49 +175,33 @@ async def handle_query(body: QueryRequest):
             row_count=0
         )
 
-    # ── Semantic cache: check Pinecone for a similar question first ─────────────
-    # If we find a cached (question, sql) pair with similarity score > 0.85,
-    # we reuse the SQL instead of calling the AI. Cache is optional; if Pinecone
-    # or OpenAI is unavailable, find_similar_query returns None and we fall back to AI.
-    sql_cached = find_similar_query(body.question)
-    if sql_cached:
-        try:
-            safe_sql = validate_sql(sql_cached)
-        except QueryValidationError:
-            # Cached SQL failed validation (e.g. schema changed); fall through to AI
-            sql_cached = None
-        else:
-            result = execute_query(safe_sql)
-            if isinstance(result, dict) and "error" in result:
-                # Execution failed; fall through to AI to generate fresh SQL
-                sql_cached = None
-            else:
-                # Cache hit: use cached SQL and return (do not store again)
-                if not result:
-                    return QueryResponse(
-                        question=body.question,
-                        sql=safe_sql,
-                        results=[],
-                        explanation="No records found for your query.",
-                        row_count=0,
-                    )
-                return QueryResponse(
-                    question=body.question,
-                    sql=safe_sql,
-                    results=result,
-                    explanation="This query was answered using a similar cached question.",
-                    row_count=len(result),
-                    result_sentence=_build_result_sentence(result),
-                    result_summary=_build_result_summary(result),
-                )
+    # ── Semantic cache: retrieve top-3 similar references (optional) ────────────
+    # Instead of directly reusing the cached SQL, we provide (question, SQL) pairs
+    # as reference examples to the LLM so it can generate the correct SQL for the
+    # current question. Cache is optional; if Pinecone/OpenAI are unavailable,
+    # `find_similar_queries` returns an empty list.
+    similar_examples = find_similar_queries(body.question, top_k=3)
 
-    # ── No cache hit: generate SQL via AI (existing flow) ────────────────────────
+    # Filter out any unsafe cached SQL so the prompt only contains safe references.
+    filtered_examples: list[dict] = []
+    for ex in similar_examples:
+        try:
+            candidate_sql = (ex.get("sql") or "").strip()
+            if candidate_sql:
+                validate_sql(candidate_sql)
+                filtered_examples.append(ex)
+        except QueryValidationError:
+            continue
+
+    # ── Generate SQL via AI (guided by references when available) ─────────────
     # Step 1: Get the database schema to give the AI context
     schema = get_database_schema()
 
     # Step 2: Call Gemini to generate SQL + a plain-English explanation
     try:
-        ai_result = generate_sql_and_explanation(body.question, schema)
+        ai_result = generate_sql_and_explanation(
+            body.question, schema, references=filtered_examples or None
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI generation failed: {e}")
 
@@ -301,4 +288,5 @@ async def handle_query(body: QueryRequest):
         row_count=row_count,
         result_sentence=_build_result_sentence(result, answer_template),
         result_summary=_build_result_summary(result),
+        cache_references=filtered_examples or None,
     )

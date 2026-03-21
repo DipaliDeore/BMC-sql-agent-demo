@@ -9,11 +9,18 @@ so callers can skip cache operations without breaking the main flow.
 """
 
 from typing import List, Optional
+import re
 
 from app import config
 
 # Model used for embeddings (dimension 1536)
 EMBEDDING_MODEL = "text-embedding-3-small"
+
+def normalize_text(text: str) -> str:
+    text = text.lower()
+    text = text.strip()
+    text = re.sub(r"\s+", " ", text)  # remove extra spaces
+    return text
 
 
 def get_embedding(text: str) -> Optional[List[float]]:
@@ -35,13 +42,17 @@ def get_embedding(text: str) -> Optional[List[float]]:
     try:
         from openai import OpenAI
 
+        normalized_text = normalize_text(text)
+
         client = OpenAI(api_key=config.OPENAI_API_KEY)
         response = client.embeddings.create(
-            input=[text],
+            input=[normalized_text],
             model=EMBEDDING_MODEL,
         )
+
         if response.data and len(response.data) > 0:
             return response.data[0].embedding
         return None
+
     except Exception:
         return None

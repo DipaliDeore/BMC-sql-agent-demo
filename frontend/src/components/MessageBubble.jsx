@@ -104,6 +104,20 @@ export default function MessageBubble({ message, theme }) {
           </div>
         )}
 
+        {/* Section 1.5: Retrieved cached references (optional) */}
+        {message.cache_references && message.cache_references.length > 0 && (
+          <div style={{ marginBottom: "14px" }}>
+            <p style={{ fontSize: "12px", color: mutedText, marginBottom: "6px", fontWeight: 600 }}>
+              Retrieved Similar Cached Questions
+            </p>
+            {message.cache_references.map((ref, idx) => (
+              <div key={idx} style={{ fontSize: "12px", lineHeight: "1.5", color: isDark ? "#d1d5db" : "#374151" }}>
+                {idx + 1}. score: {ref.score} | past question: {ref.question}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Section 2: Single value = natural language sentence only. Multiple rows/columns = table */}
         {message.result_sentence && (
           <div style={{ marginBottom: "14px" }}>

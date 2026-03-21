@@ -68,6 +68,9 @@ RULES:
 * If the question has NO relation to the database schema provided, do NOT generate any SQL query. Instead return this exact JSON:
   {{"sql_query": "NOT_RELATED", "explanation": "This question cannot be answered using the available database. Please ask a question related to customers, products, orders, or order items."}}
 
+Reference Examples (similar past question and their safe SQL; use as guidance only, do NOT copy verbatim):
+{references}
+
 * If the query returns a SINGLE VALUE (e.g. COUNT, SUM, AVG, MIN, MAX — one row, one number), also include "answer_template": a natural language sentence with exactly one placeholder {{}} where the result will be inserted. Example: "Total number of customers are {{}}." or "Last month total sales are {{}}."
 
 You must respond in ONLY this exact JSON format, nothing else:
@@ -91,7 +94,9 @@ User Question:
 # generate_sql_and_explanation
 # ---------------------------------------------------------------------------
 
-def generate_sql_and_explanation(question: str, schema: str) -> dict:
+def generate_sql_and_explanation(
+    question: str, schema: str, references: list[dict] | None = None
+) -> dict:
     """
     Convert a natural language question into a SQL query + explanation.
 
@@ -102,6 +107,7 @@ def generate_sql_and_explanation(question: str, schema: str) -> dict:
         question (str): The user's natural language question.
                         e.g. "Show all customers from Pune"
         schema   (str): A text description of the database tables and columns.
+        references: Optional list of similar past cached references.
 
     Returns:
         dict: A dictionary with two keys:
@@ -119,7 +125,7 @@ def generate_sql_and_explanation(question: str, schema: str) -> dict:
     # Step 1: Build the prompt template
     # ------------------------------------------------------------------
     prompt = PromptTemplate(
-        input_variables=["schema", "question"],
+        input_variables=["schema", "question", "references"],
         template=PROMPT_TEMPLATE,
     )
 
@@ -141,9 +147,24 @@ def generate_sql_and_explanation(question: str, schema: str) -> dict:
     # ------------------------------------------------------------------
     # Step 4: Run the chain — send the question + schema to Gemini
     # ------------------------------------------------------------------
+    references_text = "None"
+    if references:
+        cleaned_refs = []
+        for i, ref in enumerate(references, start=1):
+            past_q = (ref.get("question") or "").strip()
+            past_sql = (ref.get("sql") or "").strip()
+            if not past_sql:
+                continue
+            cleaned_refs.append(
+                f"Example {i}:\nPast Question: {past_q if past_q else '(unknown)'}\nPast SQL: {past_sql}"
+            )
+        if cleaned_refs:
+            references_text = "\n\n".join(cleaned_refs)
+
     raw_response = chain.invoke({
         "schema": schema,
         "question": question,
+        "references": references_text,
     })
 
     # ------------------------------------------------------------------
