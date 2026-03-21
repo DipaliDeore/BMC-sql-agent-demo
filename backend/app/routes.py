@@ -11,6 +11,8 @@ Endpoints:
     POST /api/query     — Ask a natural language question → get SQL + results + explanation
 """
 
+import uuid
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -32,6 +34,8 @@ router = APIRouter(prefix="/api", tags=["SQL Agent"])
 class QueryRequest(BaseModel):
     """Request body for the POST /api/query endpoint."""
     question: str  # The user's natural language question
+    # Stable id per browser session so LangGraph MemorySaver can recall prior turns
+    conversation_id: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -46,6 +50,7 @@ class QueryResponse(BaseModel):
     # Optional debug info to show what Pinecone retrieval returned.
     # This does not affect the main logic.
     cache_references: list[dict] | None = None
+    conversation_id: str | None = None  # Echo effective thread id — reuse on later requests
 
 
 def _format_single_value(val) -> str:
@@ -112,7 +117,7 @@ async def test_db_connection():
     if isinstance(result, dict) and "error" in result:
         raise HTTPException(
             status_code=503,
-            detail=f"Database connection failed: {result['error']}"
+            detail="I couldn't reach the database just now. Double-check it's running and try again?",
         )
 
     return {
@@ -158,10 +163,18 @@ async def handle_query(body: QueryRequest):
         - If Gemini returns empty SQL → return safely with empty results
         - If query returns no rows → explanation = "No records found for your query."
     """
+    conversation_id = (body.conversation_id or "").strip() or str(uuid.uuid4())
 
-    # Reject empty questions
+    # Empty question — respond in chat style (still a normal JSON body for clients)
     if not body.question.strip():
-        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            explanation="Hmm, I didn't quite catch that — could you ask that again with a bit more detail?",
+            row_count=0,
+            conversation_id=conversation_id,
+        )
 
     # ── Security Check: Detect dangerous input BEFORE calling Gemini ─────────────
     # This pre-check runs before the AI model is called, so dangerous queries
@@ -171,8 +184,9 @@ async def handle_query(body: QueryRequest):
             question=body.question,
             sql="",
             results=[],
-            explanation="This operation is not permitted. Only read-only queries are allowed. Data modification operations such as DELETE, UPDATE, INSERT, and DROP are not supported.",
-            row_count=0
+            explanation="I can only look up data for you — I can't change or delete anything in the database. Try asking a read-only question (like counts, lists, or filters) and I'll help!",
+            row_count=0,
+            conversation_id=conversation_id,
         )
 
     # ── Semantic cache: retrieve top-3 similar references (optional) ────────────
@@ -200,10 +214,16 @@ async def handle_query(body: QueryRequest):
     # Step 2: Call Gemini to generate SQL + a plain-English explanation
     try:
         ai_result = generate_sql_and_explanation(
-            body.question, schema, references=filtered_examples or None
+            body.question,
+            schema,
+            references=filtered_examples or None,
+            thread_id=conversation_id,
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI generation failed: {e}")
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="Hmm, I hit a snag putting that answer together. Could you try rephrasing your question?",
+        )
 
     # Extract both fields from the AI response
     sql_query = ai_result["sql_query"]
@@ -219,6 +239,7 @@ async def handle_query(body: QueryRequest):
             results=[],
             explanation=explanation,
             row_count=0,
+            conversation_id=conversation_id,
         )
 
     # ── Edge Case: Gemini returned an empty SQL query ────────────────────
@@ -231,6 +252,7 @@ async def handle_query(body: QueryRequest):
             results=[],
             explanation=explanation,
             row_count=0,
+            conversation_id=conversation_id,
         )
 
     # Step 3: Validate the generated SQL (blocks dangerous queries)
@@ -242,8 +264,9 @@ async def handle_query(body: QueryRequest):
             question=body.question,
             sql="",
             results=[],
-            explanation="Only read-only queries are allowed. Data modification operations are not permitted.",
+            explanation="That would change data, and I'm only set up to run safe read-only lookups. Ask me to show or summarize something instead!",
             row_count=0,
+            conversation_id=conversation_id,
         )
 
     # Step 4: Execute the validated SQL against the database
@@ -256,8 +279,9 @@ async def handle_query(body: QueryRequest):
             question=body.question,
             sql=safe_sql,
             results=[],
-            explanation="There was an error executing the query. Please try rephrasing your question.",
+            explanation="That query didn't run cleanly — might be a tricky phrasing thing. Want to try asking in a slightly different way?",
             row_count=0,
+            conversation_id=conversation_id,
         )
 
     # ── Edge Case: Query returned no rows ────────────────────────────────
@@ -268,8 +292,9 @@ async def handle_query(body: QueryRequest):
             question=body.question,
             sql=safe_sql,
             results=[],
-            explanation="No records found for your query.",
+            explanation="I ran the query, but nothing matched — you might try broadening the filters or double-checking names and dates.",
             row_count=0,
+            conversation_id=conversation_id,
         )
 
     # Step 5: Store this (question, sql) pair in Pinecone for future semantic cache hits
@@ -277,13 +302,7 @@ async def handle_query(body: QueryRequest):
     store_query(body.question, safe_sql)
 
     # Step 6: Build result_sentence (use AI answer_template for single value if provided)
-    # Step 5: Store this (question, sql) pair in Pinecone for future semantic cache hits
-    # Only store after successful execution so the cache always contains valid pairs.
-    store_query(body.question, safe_sql)
-
-    # Step 6: Build result_sentence (use AI answer_template for single value if provided)
     row_count = len(result)
-    answer_template = ai_result.get("answer_template")
     answer_template = ai_result.get("answer_template")
 
     return QueryResponse(
@@ -295,4 +314,5 @@ async def handle_query(body: QueryRequest):
         result_sentence=_build_result_sentence(result, answer_template),
         result_summary=_build_result_summary(result),
         cache_references=filtered_examples or None,
+        conversation_id=conversation_id,
     )

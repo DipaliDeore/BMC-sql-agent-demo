@@ -103,7 +103,7 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
               fontSize: "14px",
             }}
           >
-            Ask a question about your database to get started.
+            Ask me anything about your data — I'm here to help you explore it.
           </div>
         )}
 

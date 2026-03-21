@@ -37,8 +37,7 @@ def register_error_handlers(app: FastAPI):
         return JSONResponse(
             status_code=500,
             content={
-                "error": "Internal server error",
-                "detail": str(exc)
+                "detail": "Hmm, something went wrong on our side. Mind trying again in a moment?",
             }
         )
 
@@ -52,7 +51,6 @@ def register_error_handlers(app: FastAPI):
         return JSONResponse(
             status_code=422,
             content={
-                "error": "Invalid request",
-                "detail": str(exc)
+                "detail": "Hmm, I didn't quite get that. Could you rephrase?",
             }
         )
