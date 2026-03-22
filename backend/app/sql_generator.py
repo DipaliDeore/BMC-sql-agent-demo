@@ -56,8 +56,9 @@ RULES:
 * If the question has NO relation to the database schema provided, do NOT generate any SQL query. Instead return this exact JSON:
   {{"sql_query": "NOT_RELATED", "explanation": "I'm focused on this app's data — things like customers, products, orders, and line items. Try asking something along those lines and I'll dig in!"}}
 
-Reference Examples (similar past question and their safe SQL; use as guidance only, do NOT copy verbatim):
 {references}
+
+* Similar past queries may appear above as reference examples only — adapt SQL to the user's exact question and the schema; never copy SQL verbatim when filters, dates, or entities differ.
 
 * If the query returns a SINGLE VALUE (e.g. COUNT, SUM, AVG, MIN, MAX — one row, one number), also include "answer_template": a natural language sentence with exactly one placeholder {{}} where the result will be inserted. Keep the tone friendly. Example: "You've got {{}} customers total." or "Last month's sales came out to {{}}."
 
@@ -107,17 +108,28 @@ def _get_llm() -> ChatGoogleGenerativeAI:
 
 def _references_to_text(references: list[dict] | None) -> str:
     if not references:
-        return "None"
-    cleaned_refs = []
-    for i, ref in enumerate(references, start=1):
-        past_q = (ref.get("question") or "").strip()
+        return (
+            "(No similar past queries met the similarity threshold — rely on the schema and "
+            "conversation only.)"
+        )
+    lines = [
+        "Here are some similar past queries and their solutions for reference:",
+    ]
+    n = 0
+    for ref in references:
+        past_q = (ref.get("question") or "").strip() or "(unknown)"
         past_sql = (ref.get("sql") or "").strip()
         if not past_sql:
             continue
-        cleaned_refs.append(
-            f"Example {i}:\nPast Question: {past_q if past_q else '(unknown)'}\nPast SQL: {past_sql}"
+        n += 1
+        lines.append(f"Query {n}: {past_q}")
+        lines.append(f"SQL {n}: {past_sql}")
+    if n == 0:
+        return (
+            "(No similar past queries met the similarity threshold — rely on the schema and "
+            "conversation only.)"
         )
-    return "\n\n".join(cleaned_refs) if cleaned_refs else "None"
+    return "\n".join(lines)
 
 
 def _ai_message_text(msg: AIMessage) -> str:

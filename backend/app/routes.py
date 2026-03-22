@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from app.database import execute_query, get_database_schema
 from app.sql_generator import generate_sql_and_explanation, is_dangerous_input
 from app.query_validator import validate_sql, QueryValidationError
-from app.search import find_similar_queries
+from app.search import REFERENCE_TOP_K, find_similar_queries
 from app.store import store_query
 
 
@@ -189,12 +189,9 @@ async def handle_query(body: QueryRequest):
             conversation_id=conversation_id,
         )
 
-    # ── Semantic cache: retrieve top-3 similar references (optional) ────────────
-    # Instead of directly reusing the cached SQL, we provide (question, SQL) pairs
-    # as reference examples to the LLM so it can generate the correct SQL for the
-    # current question. Cache is optional; if Pinecone/OpenAI are unavailable,
-    # `find_similar_queries` returns an empty list.
-    similar_examples = find_similar_queries(body.question, top_k=3)
+    # ── Semantic cache: embedding similarity in Pinecone (not exact string match) ─
+    # Top-k neighbors above a cosine threshold become "reference examples" in the prompt.
+    similar_examples = find_similar_queries(body.question, top_k=REFERENCE_TOP_K)
 
     # Filter out any unsafe cached SQL so the prompt only contains safe references.
     filtered_examples: list[dict] = []

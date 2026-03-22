@@ -1,24 +1,33 @@
 """
-search.py - Retrieve similar queries from Pinecone (semantic cache)
--------------------------------------------------------------------
-Finds the most similar cached question to the user's question and returns
-the associated SQL if the similarity score is above the configured threshold.
+search.py - Pinecone semantic retrieval for the SQL assistant
+-------------------------------------------------------------
+Embedding-based similarity (cosine via Pinecone index). Retrieves top-k past
+(question, SQL) pairs above a similarity threshold and returns them for prompt
+injection — not for exact string matching.
 """
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from app.embedding import get_embedding
 from app.pinecone_client import get_pinecone_index
 
-# Minimum similarity score (cosine) to consider a cache hit; 0.85 = fairly strict match
-SIMILARITY_THRESHOLD = 0.85
+# Cosine similarity threshold (Pinecone returns related scores for metric=cosine)
+SIMILARITY_THRESHOLD = 0.78
+
+# Number of references passed to the LLM after filtering
+REFERENCE_TOP_K = 5
+
+# Fetch more neighbors from Pinecone, then filter by threshold (improves recall)
+_OVERFETCH_FACTOR = 4
+_OVERFETCH_MIN = 16
+_OVERFETCH_CAP = 100
 
 
 def _matches_from_results(results: Any) -> list[dict[str, Any]]:
-    """Convert Pinecone results to a normalized list of match dicts."""
-    matches = []
+    """Convert Pinecone query results to normalized match dicts."""
+    matches: list[dict[str, Any]] = []
     if not results or not getattr(results, "matches", None):
         return matches
 
@@ -26,11 +35,10 @@ def _matches_from_results(results: Any) -> list[dict[str, Any]]:
         score = getattr(match, "score", None)
         if score is None:
             continue
-
         metadata = getattr(match, "metadata", None) or {}
         matches.append(
             {
-                "score": score,
+                "score": float(score),
                 "question": metadata.get("question") or "",
                 "sql": metadata.get("sql") or "",
             }
@@ -38,23 +46,25 @@ def _matches_from_results(results: Any) -> list[dict[str, Any]]:
     return matches
 
 
-def find_similar_queries(question: str, top_k: int = 3) -> list[dict[str, Any]]:
+def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[str, Any]]:
     """
-    Look up semantically similar cached questions in Pinecone and return up to `top_k` references.
+    Semantic similarity search: embed ``question``, query Pinecone, keep matches
+    with cosine similarity >= SIMILARITY_THRESHOLD, return up to ``top_k``.
 
-    Generates an embedding for the question, queries Pinecone for the nearest
-    vectors, and returns cached references only if similarity scores are greater
-    than SIMILARITY_THRESHOLD.
+    If nothing clears the threshold, returns [] (caller proceeds without cache).
 
     Args:
-        question: The user's natural language question.
-        top_k: Number of nearest cached items to consider.
+        question: Current user question (any natural phrasing).
+        top_k: Max references (default REFERENCE_TOP_K).
 
     Returns:
-        A list of reference dicts: `{"score", "question", "sql"}` (length <= top_k).
+        List of ``{"score", "question", "sql"}``, sorted by descending score.
     """
-    if not question:
+    if not question or not question.strip():
         return []
+
+    k = REFERENCE_TOP_K if top_k is None else max(1, top_k)
+    fetch_n = min(_OVERFETCH_CAP, max(_OVERFETCH_MIN, k * _OVERFETCH_FACTOR))
 
     try:
         embedding = get_embedding(question)
@@ -67,7 +77,7 @@ def find_similar_queries(question: str, top_k: int = 3) -> list[dict[str, Any]]:
 
         results = index.query(
             vector=embedding,
-            top_k=top_k,
+            top_k=fetch_n,
             include_metadata=True,
         )
 
@@ -75,74 +85,9 @@ def find_similar_queries(question: str, top_k: int = 3) -> list[dict[str, Any]]:
         filtered = [
             m
             for m in matches
-            if (m.get("sql") or "").strip()
-            and m.get("score") is not None
-            and float(m["score"]) >= SIMILARITY_THRESHOLD
+            if (m.get("sql") or "").strip() and m["score"] >= SIMILARITY_THRESHOLD
         ]
-        return filtered[:top_k]
+        filtered.sort(key=lambda x: x["score"], reverse=True)
+        return filtered[:k]
     except Exception:
         return []
-
-"""
-search.py - Retrieve similar queries from Pinecone (semantic cache)
--------------------------------------------------------------------
-Finds the most similar cached question to the user's question and returns
-the associated SQL if the similarity score is above the configured threshold.
-"""
-
-from typing import Optional
-
-from app.embedding import get_embedding
-from app.pinecone_client import get_pinecone_index
-
-# Minimum similarity score (cosine) to consider a cache hit; 0.85 = fairly strict match
-SIMILARITY_THRESHOLD = 0.85
-
-
-def find_similar_query(question: str) -> Optional[str]:
-    """
-    Look up a semantically similar question in the cache and return its SQL if close enough.
-
-    Generates an embedding for the question, queries Pinecone for the nearest
-    vector, and returns the cached SQL only if the similarity score is greater
-    than SIMILARITY_THRESHOLD (0.85). Otherwise returns None so the app generates
-    SQL via the existing AI flow.
-
-    Args:
-        question: The user's natural language question.
-
-    Returns:
-        The cached SQL string if a similar query was found with score > 0.85,
-        otherwise None.
-    """
-    if not question:
-        return None
-
-    embedding = get_embedding(question)
-    if not embedding:
-        return None
-
-    index = get_pinecone_index()
-    if index is None:
-        return None
-
-    try:
-        results = index.query(
-            vector=embedding,
-            top_k=1,
-            include_metadata=True,
-        )
-
-        if not results.matches:
-            return None
-
-        match = results.matches[0]
-        # Pinecone cosine similarity is in match.score; ensure we have a valid score
-        score = getattr(match, "score", None)
-        if score is None or score < SIMILARITY_THRESHOLD:
-            return None
-
-        metadata = getattr(match, "metadata", None) or {}
-        return metadata.get("sql")
-    except Exception:
-        return None
