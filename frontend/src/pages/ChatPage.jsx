@@ -19,10 +19,10 @@
  *   toggleTheme  {Function}  Toggles between dark and light mode
  */
 
-import React, { useState } from "react";
+import React, { useRef, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
-import { sendQuery } from "../api/agent";
+import { sendQuery, getApiErrorMessage } from "../api/agent";
 
 export default function ChatPage({ theme, toggleTheme }) {
   // State: chat messages, query history, loading indicator, input value
@@ -30,6 +30,11 @@ export default function ChatPage({ theme, toggleTheme }) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [inputValue, setInputValue] = useState("");
+  const conversationIdRef = useRef(
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `session-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
 
   /**
    * Handle sending a question to the backend.
@@ -46,7 +51,8 @@ export default function ChatPage({ theme, toggleTheme }) {
 
     try {
       // Call the backend API
-      const data = await sendQuery(question);
+      const data = await sendQuery(question, conversationIdRef.current);
+      if (data.conversation_id) conversationIdRef.current = data.conversation_id;
 
       // Create the assistant response message
       const assistantMessage = {
@@ -65,10 +71,10 @@ export default function ChatPage({ theme, toggleTheme }) {
       // Add question to history (newest first)
       setHistory((prev) => [question, ...prev]);
     } catch (error) {
-      // Add error message to the chat
       const errorMessage = {
         role: "assistant",
         error: true,
+        errorText: getApiErrorMessage(error),
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {

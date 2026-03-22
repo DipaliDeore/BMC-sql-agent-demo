@@ -3,18 +3,24 @@ sql_generator.py
 ----------------
 Module 3 — AI SQL Generator
 
-Converts a natural language question into a safe SQL SELECT query
-and a plain-English explanation using Google Gemini via LangChain.
-
-Main function:
-    generate_sql_and_explanation(question, schema) -> dict
+Converts natural language into a safe SQL SELECT + explanation using Google Gemini.
+Uses LangGraph with MemorySaver so each conversation thread remembers prior Q&A
+for follow-up questions ("same thing but last month", etc.).
 """
 
-import json
+from __future__ import annotations
 
+import json
+import uuid
+from typing import Annotated, Any
+
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from typing_extensions import TypedDict
 
 from app import config
 
@@ -22,42 +28,24 @@ from app import config
 # ---------------------------------------------------------------------------
 # Dangerous Input Detection
 # ---------------------------------------------------------------------------
-# Pre-check function to detect dangerous queries before calling Gemini.
-# This prevents dangerous queries from being processed by the AI model.
 
 DANGEROUS_KEYWORDS = [
     "delete", "drop", "update", "insert", "truncate",
     "alter", "remove", "erase", "clear", "destroy",
-    "modify", "change", "edit", "wipe"
+    "modify", "change", "edit", "wipe",
 ]
 
 
 def is_dangerous_input(question: str) -> bool:
-    """
-    Check if a user question contains dangerous keywords that indicate
-    data modification operations.
-
-    This function runs BEFORE calling Gemini, so dangerous queries are
-    blocked immediately with a security warning instead of being processed
-    by the AI model.
-
-    Args:
-        question (str): The user's natural language question.
-
-    Returns:
-        bool: True if the question contains dangerous keywords, False otherwise.
-    """
     question_lower = question.lower()
     return any(keyword in question_lower for keyword in DANGEROUS_KEYWORDS)
 
 
 # ---------------------------------------------------------------------------
-# Prompt Template
+# System prompt (schema + references); user turns live in message history
 # ---------------------------------------------------------------------------
-# This is the exact instruction we send to Gemini.
-# {schema} and {question} are filled in at runtime.
 
-PROMPT_TEMPLATE = """You are an expert SQL query generator for a MySQL database.
+SYSTEM_PROMPT_TEMPLATE = """You are a friendly data assistant who helps people explore a MySQL database. You write accurate SELECT queries and explain things in a warm, conversational tone — clear and human, not corporate or stiff.
 
 RULES:
 * Generate ONLY a SELECT query
@@ -66,20 +54,22 @@ RULES:
 * If the question cannot be answered using the schema, return a valid SELECT query that returns an empty result
 * Do not hallucinate table or column names
 * If the question has NO relation to the database schema provided, do NOT generate any SQL query. Instead return this exact JSON:
-  {{"sql_query": "NOT_RELATED", "explanation": "This question cannot be answered using the available database. Please ask a question related to customers, products, orders, or order items."}}
+  {{"sql_query": "NOT_RELATED", "explanation": "I'm focused on this app's data — things like customers, products, orders, and line items. Try asking something along those lines and I'll dig in!"}}
 
-<<<<<<< HEAD
-Reference Examples (similar past question and their safe SQL; use as guidance only, do NOT copy verbatim):
 {references}
 
-=======
->>>>>>> origin/pineconeIntegration
-* If the query returns a SINGLE VALUE (e.g. COUNT, SUM, AVG, MIN, MAX — one row, one number), also include "answer_template": a natural language sentence with exactly one placeholder {{}} where the result will be inserted. Example: "Total number of customers are {{}}." or "Last month total sales are {{}}."
+* Similar past queries may appear above as reference examples only — adapt SQL to the user's exact question and the schema; never copy SQL verbatim when filters, dates, or entities differ.
+
+* If the query returns a SINGLE VALUE (e.g. COUNT, SUM, AVG, MIN, MAX — one row, one number), also include "answer_template": a natural language sentence with exactly one placeholder {{}} where the result will be inserted. Keep the tone friendly. Example: "You've got {{}} customers total." or "Last month's sales came out to {{}}."
+
+* In "explanation", sound like a helpful teammate: short, natural, maybe a quick opener like "Here's what I pulled" or "Got it!" when it fits. Never use stiff phrases like "Request processed successfully" or "Your request has been completed."
+
+* This is a multi-turn chat. Use earlier user messages and your previous JSON replies to interpret follow-ups (e.g. "same filter but for December", "narrow that down").
 
 You must respond in ONLY this exact JSON format, nothing else:
 {{
   "sql_query": "your SELECT query here",
-  "explanation": "2-3 line simple explanation in plain English",
+  "explanation": "2-3 short lines in a friendly, conversational voice",
   "answer_template": "Optional: one sentence with {{}} for the single result value, only for COUNT/SUM/AVG-style queries"
 }}
 
@@ -87,10 +77,118 @@ Do not add any text before or after the JSON.
 Do not use markdown, code blocks, or backticks.
 
 Database Schema:
-{schema}
+{schema}"""
 
-User Question:
-{question}"""
+
+# ---------------------------------------------------------------------------
+# LangGraph state + compiled app (MemorySaver lives for process lifetime)
+# ---------------------------------------------------------------------------
+
+_MAX_MESSAGES_FOR_LLM = 24  # cap context: prior turns + current user message
+
+
+class _SQLGraphState(TypedDict):
+    messages: Annotated[list[AnyMessage], add_messages]
+
+
+_llm: ChatGoogleGenerativeAI | None = None
+_sql_app = None
+
+
+def _get_llm() -> ChatGoogleGenerativeAI:
+    global _llm
+    if _llm is None:
+        _llm = ChatGoogleGenerativeAI(
+            model="gemini-flash-latest",
+            google_api_key=config.GEMINI_API_KEY,
+            temperature=0,
+        )
+    return _llm
+
+
+def _references_to_text(references: list[dict] | None) -> str:
+    if not references:
+        return (
+            "(No similar past queries met the similarity threshold — rely on the schema and "
+            "conversation only.)"
+        )
+    lines = [
+        "Here are some similar past queries and their solutions for reference:",
+    ]
+    n = 0
+    for ref in references:
+        past_q = (ref.get("question") or "").strip() or "(unknown)"
+        past_sql = (ref.get("sql") or "").strip()
+        if not past_sql:
+            continue
+        n += 1
+        lines.append(f"Query {n}: {past_q}")
+        lines.append(f"SQL {n}: {past_sql}")
+    if n == 0:
+        return (
+            "(No similar past queries met the similarity threshold — rely on the schema and "
+            "conversation only.)"
+        )
+    return "\n".join(lines)
+
+
+def _ai_message_text(msg: AIMessage) -> str:
+    c = msg.content
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        parts: list[str] = []
+        for block in c:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("text"):
+                parts.append(str(block["text"]))
+        return "".join(parts)
+    return str(c)
+
+
+def _clean_json_response(raw: str) -> str:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = "\n".join(cleaned.splitlines()[1:])
+    if cleaned.endswith("```"):
+        cleaned = "\n".join(cleaned.splitlines()[:-1])
+    return cleaned.strip()
+
+
+def _call_model(state: _SQLGraphState, config: RunnableConfig) -> dict[str, list[AIMessage]]:
+    conf = config["configurable"]
+    schema = conf["schema"]
+    references_text = conf["references_text"]
+    system = SystemMessage(
+        content=SYSTEM_PROMPT_TEMPLATE.format(schema=schema, references=references_text)
+    )
+    msgs = state["messages"]
+    if len(msgs) > _MAX_MESSAGES_FOR_LLM:
+        trimmed = msgs[-_MAX_MESSAGES_FOR_LLM:]
+    else:
+        trimmed = msgs
+    llm = _get_llm()
+    response = llm.invoke([system, *trimmed])
+    if not isinstance(response, AIMessage):
+        response = AIMessage(content=getattr(response, "content", str(response)))
+    return {"messages": [response]}
+
+
+def _build_sql_app():
+    graph = StateGraph(_SQLGraphState)
+    graph.add_node("generate", _call_model)
+    graph.add_edge(START, "generate")
+    graph.add_edge("generate", END)
+    checkpointer = MemorySaver()
+    return graph.compile(checkpointer=checkpointer)
+
+
+def get_sql_app():
+    global _sql_app
+    if _sql_app is None:
+        _sql_app = _build_sql_app()
+    return _sql_app
 
 
 # ---------------------------------------------------------------------------
@@ -98,120 +196,57 @@ User Question:
 # ---------------------------------------------------------------------------
 
 def generate_sql_and_explanation(
-    question: str, schema: str, references: list[dict] | None = None
+    question: str,
+    schema: str,
+    references: list[dict] | None = None,
+    *,
+    thread_id: str | None = None,
 ) -> dict:
     """
-    Convert a natural language question into a SQL query + explanation.
+    Convert a natural language question into SQL + explanation.
 
-    Uses Google Gemini (via LangChain) to generate a safe SELECT query
-    and a short plain-English explanation of what the query does.
+    When ``thread_id`` is set, prior turns in that thread are loaded from
+    MemorySaver so follow-up questions have context.
 
     Args:
-        question (str): The user's natural language question.
-                        e.g. "Show all customers from Pune"
-        schema   (str): A text description of the database tables and columns.
-        references: Optional list of similar past cached references.
-
-    Returns:
-        dict: A dictionary with two keys:
-              {
-                "sql_query":   "SELECT ...",
-                "explanation": "This query ..."
-              }
-
-    Raises:
-        Exception: If the AI response cannot be parsed as JSON, or if
-                   the required keys are missing from the response.
+        question: Current user message.
+        schema: Database schema text.
+        references: Optional Pinecone-style similar (question, sql) examples.
+        thread_id: LangGraph checkpoint thread (conversation id). If None, a
+            one-off id is used so this call does not share memory with others.
     """
-
-    # ------------------------------------------------------------------
-    # Step 1: Build the prompt template
-    # ------------------------------------------------------------------
-    prompt = PromptTemplate(
-        input_variables=["schema", "question", "references"],
-        template=PROMPT_TEMPLATE,
+    references_text = _references_to_text(references)
+    tid = (thread_id or "").strip() or str(uuid.uuid4())
+    app = get_sql_app()
+    cfg = {
+        "configurable": {
+            "thread_id": tid,
+            "schema": schema,
+            "references_text": references_text,
+        }
+    }
+    result = app.invoke(
+        {"messages": [HumanMessage(content=question.strip())]},
+        cfg,
     )
-
-    # ------------------------------------------------------------------
-    # Step 2: Initialize the Gemini model
-    # ------------------------------------------------------------------
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-flash-latest",
-        google_api_key=config.GEMINI_API_KEY,
-        temperature=0,          # Low temperature = more deterministic/consistent
-    )
-
-    # ------------------------------------------------------------------
-    # Step 3: Build the LangChain pipeline
-    # prompt → llm → plain string output
-    # ------------------------------------------------------------------
-    chain = prompt | llm | StrOutputParser()
-
-    # ------------------------------------------------------------------
-    # Step 4: Run the chain — send the question + schema to Gemini
-    # ------------------------------------------------------------------
-    references_text = "None"
-    if references:
-        cleaned_refs = []
-        for i, ref in enumerate(references, start=1):
-            past_q = (ref.get("question") or "").strip()
-            past_sql = (ref.get("sql") or "").strip()
-            if not past_sql:
-                continue
-            cleaned_refs.append(
-                f"Example {i}:\nPast Question: {past_q if past_q else '(unknown)'}\nPast SQL: {past_sql}"
-            )
-        if cleaned_refs:
-            references_text = "\n\n".join(cleaned_refs)
-
-    raw_response = chain.invoke({
-        "schema": schema,
-        "question": question,
-        "references": references_text,
-    })
-
-    # ------------------------------------------------------------------
-    # Step 5: Clean the response
-    # Gemini sometimes wraps JSON in markdown fences like ```json ... ```
-    # We strip those out before parsing.
-    # ------------------------------------------------------------------
-    cleaned = raw_response.strip()
-
-    # Remove opening markdown fence (e.g. ```json or ```)
-    if cleaned.startswith("```"):
-        # Drop the first line (the fence opener)
-        cleaned = "\n".join(cleaned.splitlines()[1:])
-
-    # Remove closing markdown fence
-    if cleaned.endswith("```"):
-        cleaned = "\n".join(cleaned.splitlines()[:-1])
-
-    cleaned = cleaned.strip()
-
-    # ------------------------------------------------------------------
-    # Step 6: Parse the cleaned response as JSON
-    # ------------------------------------------------------------------
+    last = result["messages"][-1]
+    if not isinstance(last, AIMessage):
+        raise Exception(f"Expected AIMessage, got {type(last)}")
+    raw_response = _ai_message_text(last)
+    cleaned = _clean_json_response(raw_response)
     try:
         parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
         raise Exception(
             f"Failed to parse AI response as JSON. Raw response: {raw_response}"
-        )
-
-    # ------------------------------------------------------------------
-    # Step 7: Validate that both required keys are present
-    # ------------------------------------------------------------------
+        ) from e
     if "sql_query" not in parsed or "explanation" not in parsed:
         raise Exception(
             f"AI response is missing required keys ('sql_query' or 'explanation'). "
             f"Got: {parsed}"
         )
-
-    # ------------------------------------------------------------------
-    # Step 8: Return the final result (answer_template optional for single-value queries)
-    # ------------------------------------------------------------------
-    out = {
-        "sql_query":   parsed["sql_query"],
+    out: dict[str, Any] = {
+        "sql_query": parsed["sql_query"],
         "explanation": parsed["explanation"],
     }
     if "answer_template" in parsed and parsed["answer_template"]:

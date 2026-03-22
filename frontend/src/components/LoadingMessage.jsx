@@ -16,9 +16,9 @@ import React, { useState, useEffect } from "react";
 
 // The 3 loading messages shown sequentially
 const LOADING_MESSAGES = [
-  "Analyzing question...",
-  "Generating SQL query...",
-  "Fetching results...",
+  "Taking a look at your question…",
+  "Working out the right query…",
+  "Grabbing your results…",
 ];
 
 export default function LoadingMessage({ theme }) {

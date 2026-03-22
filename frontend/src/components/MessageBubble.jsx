@@ -13,18 +13,12 @@
  *   - Multiple rows/columns: tabular format
  *   - Executed Query always at the end
  *   Order: Explanation → (sentence OR table) → Executed Query
- * Assistant messages (STRICT response rules):
- *   - Single value (COUNT/SUM/AVG): natural language sentence only, NO table, NO column names
- *   - Multiple rows/columns: tabular format
- *   - Executed Query always at the end
- *   Order: Explanation → (sentence OR table) → Executed Query
  *
  * Error messages:
- *   - Shows "Something went wrong. Please try again."
+ *   - Shows a human-friendly error from errorText, or a default gentle message
  *
  * Props:
- *   message  {Object}  Message object with: role, content, sql, results, explanation, row_count, result_sentence, error
- *   message  {Object}  Message object with: role, content, sql, results, explanation, row_count, result_sentence, error
+ *   message  {Object}  Message object with: role, content, sql, results, explanation, row_count, result_sentence, error, errorText
  *   theme    {string}  "dark" or "light"
  */
 
@@ -81,7 +75,8 @@ export default function MessageBubble({ message, theme }) {
             color: isDark ? "#ef4444" : "#dc2626",
           }}
         >
-          Something went wrong. Please try again.
+          {message.errorText ||
+            "Hmm, I didn't quite get that. Could you try again or rephrase?"}
         </div>
       </div>
     );
