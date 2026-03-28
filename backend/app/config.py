@@ -32,3 +32,6 @@ PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "sql-agent-cache")
 
 # ── OpenAI (embeddings for Pinecone; text-embedding-3-small) ───────────────────
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+
+# ── SQL retry configuration ──────────────────────────────────────────────────────
+MAX_SQL_RETRIES = int(os.getenv("MAX_SQL_RETRIES", "3"))

@@ -20,6 +20,7 @@ from app.database import execute_query, get_database_schema
 from app.sql_generator import generate_sql_and_explanation, is_dangerous_input
 from app.query_validator import validate_sql, QueryValidationError
 from app.search import REFERENCE_TOP_K, find_similar_queries
+from app.sql_retry_engine import execute_with_retry
 from app.store import store_query
 
 
@@ -252,34 +253,38 @@ async def handle_query(body: QueryRequest):
             conversation_id=conversation_id,
         )
 
-    # Step 3: Validate the generated SQL (blocks dangerous queries)
-    try:
-        safe_sql = validate_sql(sql_query)
-    except QueryValidationError:
-        # Return a friendly message instead of a 422 error
+    # Step 3 + 4: Self-healing execution with retry (validation + execution + fix loop)
+    execution_result = execute_with_retry(
+        question=body.question,
+        initial_sql=sql_query,
+        schema=schema,
+    )
+
+    # Handle DB-level failures immediately (no retry loop beyond classifier stop).
+    if execution_result["type"] == "DB_ERROR":
         return QueryResponse(
             question=body.question,
             sql="",
             results=[],
-            explanation="That would change data, and I'm only set up to run safe read-only lookups. Ask me to show or summarize something instead!",
+            explanation=execution_result["message"],
             row_count=0,
             conversation_id=conversation_id,
         )
 
-    # Step 4: Execute the validated SQL against the database
-    result = execute_query(safe_sql)
-
-    # execute_query returns {"error": "..."} on failure
-    # Return a friendly message instead of a 500 error
-    if isinstance(result, dict) and "error" in result:
+    # Handle SQL failures after repair attempts are exhausted.
+    if execution_result["type"] == "SQL_ERROR":
         return QueryResponse(
             question=body.question,
-            sql=safe_sql,
+            sql="",
             results=[],
-            explanation="That query didn't run cleanly — might be a tricky phrasing thing. Want to try asking in a slightly different way?",
+            explanation=execution_result["message"],
             row_count=0,
             conversation_id=conversation_id,
         )
+
+    # Success: pick the final working SQL and its query results.
+    result = execution_result["results"]
+    safe_sql = execution_result["sql"]
 
     # ── Edge Case: Query returned no rows ────────────────────────────────
     # If the query ran successfully but returned no rows,
