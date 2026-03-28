@@ -1,133 +1,154 @@
 /**
  * Sidebar.jsx - Left Panel Component
- * ------------------------------------
- * Displays:
- *   - App title: "SQL Agent"
- *   - Dark/Light mode toggle button (top right)
- *   - "Query History" section with list of past questions
- *   - Clicking a history item re-sends that question
- *   - Empty state: "No queries yet."
- *
- * Props:
- *   theme        {string}    "dark" or "light"
- *   toggleTheme  {Function}  Toggles between dark and light mode
- *   history      {Array}     List of past question strings
- *   onSelect     {Function}  Called with the question string when a history item is clicked
  */
 
 import React from "react";
 
 export default function Sidebar({ theme, toggleTheme, history, onSelect }) {
-  // Theme-based colors
   const isDark = theme === "dark";
-  const bgColor = isDark ? "#0f0f0f" : "#ffffff";
-  const textColor = isDark ? "#e5e5e5" : "#111111";
-  const borderColor = isDark ? "#2a2a2a" : "#e5e5e5";
-  const hoverBg = isDark ? "#1a1a1a" : "#f5f5f5";
-  const mutedText = isDark ? "#888888" : "#666666";
 
   return (
     <aside
+      className="app-sidebar"
       style={{
-        width: "25%",
-        minWidth: "220px",
-        backgroundColor: bgColor,
-        borderRight: `1px solid ${borderColor}`,
-        color: textColor,
+        width: "clamp(220px, 26%, 300px)",
+        flexShrink: 0,
+        backgroundColor: "var(--surface-1)",
+        borderRight: "1px solid var(--border)",
+        color: "var(--text)",
         display: "flex",
         flexDirection: "column",
-        height: "100vh",
+        height: "100%",
         overflow: "hidden",
+        boxShadow: "var(--shadow-sm)",
       }}
     >
-      {/* Header: App title + theme toggle */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "16px 20px",
-          borderBottom: `1px solid ${borderColor}`,
+          gap: "12px",
+          padding: "18px 20px",
+          borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        <h1 style={{ fontSize: "18px", fontWeight: 600, margin: 0 }}>
-          SQL Agent
-        </h1>
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              height: "3px",
+              width: "40px",
+              borderRadius: "2px",
+              background: "var(--header-accent)",
+              marginBottom: "10px",
+            }}
+          />
+          <h1
+            style={{
+              fontSize: "17px",
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              margin: 0,
+              lineHeight: 1.2,
+            }}
+          >
+            SQL Agent
+          </h1>
+          <p
+            style={{
+              fontSize: "12px",
+              color: "var(--text-muted)",
+              marginTop: "4px",
+              fontWeight: 500,
+            }}
+          >
+            Natural language → answers
+          </p>
+        </div>
         <button
           id="theme-toggle-btn"
+          type="button"
           onClick={toggleTheme}
+          aria-pressed={isDark}
+          aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
           style={{
-            padding: "6px 14px",
+            flexShrink: 0,
+            padding: "8px 14px",
             fontSize: "12px",
-            fontWeight: 500,
-            border: `1px solid ${borderColor}`,
-            borderRadius: "6px",
-            backgroundColor: "transparent",
-            color: textColor,
+            fontWeight: 600,
+            border: "1px solid var(--border)",
+            borderRadius: "999px",
+            backgroundColor: "var(--surface-2)",
+            color: "var(--text)",
             cursor: "pointer",
+            transition: "background-color 0.15s ease, border-color 0.15s ease",
           }}
         >
           {isDark ? "Light" : "Dark"}
         </button>
       </div>
 
-      {/* Query History heading */}
       <div
         style={{
           padding: "14px 20px 8px",
-          fontSize: "12px",
-          fontWeight: 600,
+          fontSize: "11px",
+          fontWeight: 700,
           textTransform: "uppercase",
-          letterSpacing: "0.05em",
-          color: mutedText,
+          letterSpacing: "0.08em",
+          color: "var(--text-muted)",
         }}
       >
-        Query History
+        Query history
       </div>
 
-      {/* History list or empty state */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "0 12px 12px" }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "4px 12px 16px" }}>
         {history.length === 0 ? (
           <p
             style={{
-              padding: "20px 8px",
+              padding: "24px 12px",
               fontSize: "13px",
-              color: mutedText,
+              color: "var(--text-muted)",
               textAlign: "center",
+              lineHeight: 1.5,
             }}
           >
-            No queries yet.
+            Your questions will appear here so you can rerun them quickly.
           </p>
         ) : (
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
             {history.map((item, index) => (
-              <li key={index}>
+              <li key={`${item}-${index}`}>
                 <button
                   id={`history-item-${index}`}
+                  type="button"
+                  title={item}
                   onClick={() => onSelect(item)}
                   style={{
                     width: "100%",
                     textAlign: "left",
-                    padding: "10px 12px",
+                    padding: "11px 14px",
                     fontSize: "13px",
-                    lineHeight: "1.4",
-                    border: "none",
-                    borderRadius: "6px",
+                    lineHeight: 1.45,
+                    border: "1px solid transparent",
+                    borderRadius: "10px",
                     backgroundColor: "transparent",
-                    color: textColor,
+                    color: "var(--text)",
                     cursor: "pointer",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
                     display: "block",
-                    marginBottom: "2px",
+                    marginBottom: "4px",
+                    transition: "background-color 0.12s ease, border-color 0.12s ease",
                   }}
-                  onMouseEnter={(e) =>
-                    (e.currentTarget.style.backgroundColor = hoverBg)
-                  }
-                  onMouseLeave={(e) =>
-                    (e.currentTarget.style.backgroundColor = "transparent")
-                  }
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = "var(--surface-2)";
+                    e.currentTarget.style.borderColor = "var(--border-subtle)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = "transparent";
+                    e.currentTarget.style.borderColor = "transparent";
+                  }}
                 >
                   {item}
                 </button>
