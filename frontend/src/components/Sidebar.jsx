@@ -54,16 +54,6 @@ export default function Sidebar({ theme, toggleTheme, history, onSelect }) {
           >
             SQL Agent
           </h1>
-          <p
-            style={{
-              fontSize: "12px",
-              color: "var(--text-muted)",
-              marginTop: "4px",
-              fontWeight: 500,
-            }}
-          >
-            Natural language → answers
-          </p>
         </div>
         <button
           id="theme-toggle-btn"

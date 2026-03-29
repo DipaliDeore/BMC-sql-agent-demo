@@ -41,11 +41,6 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
     }
   }
 
-  const examplePrompts = [
-    "How many rows are in the largest table?",
-    "List tables and row counts",
-  ];
-
   return (
     <div
       className="app-chat"
@@ -78,16 +73,6 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
         >
           AI Data Assistant
         </h2>
-        <p
-          style={{
-            fontSize: "13px",
-            color: "var(--text-muted)",
-            marginTop: "4px",
-            fontWeight: 500,
-          }}
-        >
-          Ask in plain English — get SQL, tables, and explanations.
-        </p>
       </header>
 
       <div
@@ -144,46 +129,11 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
                 fontSize: "14px",
                 lineHeight: 1.55,
                 maxWidth: "400px",
-                marginBottom: "24px",
+                marginBottom: 0,
               }}
             >
               Describe what you want to know. The assistant generates SQL, runs it, and summarizes results.
             </p>
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: "10px",
-                justifyContent: "center",
-                maxWidth: "440px",
-              }}
-            >
-              {examplePrompts.map((prompt) => (
-                <button
-                  key={prompt}
-                  type="button"
-                  disabled={loading}
-                  onClick={() => {
-                    if (!loading) onSend(prompt);
-                  }}
-                  style={{
-                    padding: "10px 16px",
-                    fontSize: "13px",
-                    fontWeight: 500,
-                    color: "var(--text)",
-                    backgroundColor: "var(--surface-2)",
-                    border: "1px solid var(--border)",
-                    borderRadius: "999px",
-                    cursor: loading ? "not-allowed" : "pointer",
-                    opacity: loading ? 0.6 : 1,
-                    fontFamily: "inherit",
-                    transition: "border-color 0.15s ease, background-color 0.15s ease",
-                  }}
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
           </div>
         )}
 
