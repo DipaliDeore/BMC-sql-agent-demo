@@ -2,8 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Global Styles ────────────────────────────────────────────────────────── */
-/* Inter font is loaded from Google Fonts in index.html */
+/* ── Theme tokens ─────────────────────────────────────────────────────────── */
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --app-bg: #0a0a0c;
+  --surface-0: #0a0a0c;
+  --surface-1: #121215;
+  --surface-2: #18181c;
+  --surface-3: #222228;
+  --border: #2a2a32;
+  --border-subtle: #1f1f24;
+  --text: #ececf1;
+  --text-muted: #8b8b96;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --accent-active: #4f46e5;
+  --accent-fg: #ffffff;
+  --user-bubble: #1a1a24;
+  --user-bubble-border: #2e2e3d;
+  --assistant-bubble: #141418;
+  --error: #f87171;
+  --error-bg: rgba(248, 113, 113, 0.08);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --header-accent: linear-gradient(90deg, #6366f1, #a855f7);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --app-bg: #f4f5f7;
+  --surface-0: #ffffff;
+  --surface-1: #ffffff;
+  --surface-2: #f0f1f4;
+  --surface-3: #e6e8ed;
+  --border: #dfe2e8;
+  --border-subtle: #eceef2;
+  --text: #111318;
+  --text-muted: #5c6370;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-active: #3730a3;
+  --accent-fg: #ffffff;
+  --user-bubble: #eef0ff;
+  --user-bubble-border: #c7d2fe;
+  --assistant-bubble: #f8f9fb;
+  --error: #dc2626;
+  --error-bg: rgba(220, 38, 38, 0.06);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 12px 40px rgba(15, 23, 42, 0.1);
+  --header-accent: linear-gradient(90deg, #4f46e5, #7c3aed);
+}
 
 * {
   box-sizing: border-box;
@@ -16,13 +65,64 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
+  background: var(--app-bg);
+  color: var(--text);
 }
 
-/* ── Scrollbar Styles ─────────────────────────────────────────────────────── */
+.app-root {
+  min-height: 100dvh;
+  background: var(--app-bg);
+  color: var(--text);
+}
+
+/* Shell: sidebar + main; main shrinks correctly on narrow viewports */
+.app-shell {
+  display: flex;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    flex-direction: column;
+  }
+
+  .app-sidebar {
+    flex: 0 0 auto;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-height: 38vh;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .app-chat {
+    flex: 1 1 auto;
+    width: 100% !important;
+    min-height: 0;
+  }
+}
+
+/* Focus visibility */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -30,10 +130,22 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #888;
-  border-radius: 3px;
+  background: var(--border);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #666;
+  background: var(--text-muted);
+}
+
+@keyframes sql-agent-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
 }

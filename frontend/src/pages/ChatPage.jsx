@@ -92,8 +92,7 @@ export default function ChatPage({ theme, toggleTheme }) {
   }
 
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
-      {/* Left Panel: Sidebar (25% width) */}
+    <div className="app-shell">
       <Sidebar
         theme={theme}
         toggleTheme={toggleTheme}
@@ -101,7 +100,6 @@ export default function ChatPage({ theme, toggleTheme }) {
         onSelect={handleHistorySelect}
       />
 
-      {/* Right Panel: Chat Window (75% width) */}
       <ChatWindow
         theme={theme}
         messages={messages}
