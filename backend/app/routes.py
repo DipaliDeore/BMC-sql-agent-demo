@@ -14,9 +14,11 @@ Endpoints:
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app import config
 from app.database import execute_query, get_database_schema
+from app.query_analyzer import analyze_query
 from app.sql_generator import generate_sql_and_explanation, is_dangerous_input
 from app.query_validator import validate_sql, QueryValidationError
 from app.search import REFERENCE_TOP_K, find_similar_queries
@@ -52,6 +54,24 @@ class QueryResponse(BaseModel):
     # This does not affect the main logic.
     cache_references: list[dict] | None = None
     conversation_id: str | None = None  # Echo effective thread id — reuse on later requests
+    # Multi-query responses (optional; defaults keep single-query clients unchanged)
+    is_multi: bool = False
+    sub_responses: list[dict] = Field(default_factory=list)
+
+
+def _is_safe_reference(ex: dict) -> bool:
+    """
+    Return True if a Pinecone reference row has SQL that passes the same
+    validator used for the main pipeline (SELECT-only, etc.).
+    """
+    try:
+        candidate_sql = (ex.get("sql") or "").strip()
+        if not candidate_sql:
+            return False
+        validate_sql(candidate_sql)
+        return True
+    except QueryValidationError:
+        return False
 
 
 def _format_single_value(val) -> str:
@@ -177,144 +197,285 @@ async def handle_query(body: QueryRequest):
             conversation_id=conversation_id,
         )
 
-    # ── Security Check: Detect dangerous input BEFORE calling Gemini ─────────────
-    # This pre-check runs before the AI model is called, so dangerous queries
-    # are blocked immediately with a security warning instead of being processed.
-    if is_dangerous_input(body.question):
-        return QueryResponse(
-            question=body.question,
-            sql="",
-            results=[],
-            explanation="I can only look up data for you — I can't change or delete anything in the database. Try asking a read-only question (like counts, lists, or filters) and I'll help!",
-            row_count=0,
-            conversation_id=conversation_id,
-        )
-
-    # ── Semantic cache: embedding similarity in Pinecone (not exact string match) ─
-    # Top-k neighbors above a cosine threshold become "reference examples" in the prompt.
-    similar_examples = find_similar_queries(body.question, top_k=REFERENCE_TOP_K)
-
-    # Filter out any unsafe cached SQL so the prompt only contains safe references.
-    filtered_examples: list[dict] = []
-    for ex in similar_examples:
-        try:
-            candidate_sql = (ex.get("sql") or "").strip()
-            if candidate_sql:
-                validate_sql(candidate_sql)
-                filtered_examples.append(ex)
-        except QueryValidationError:
-            continue
-
-    # ── Generate SQL via AI (guided by references when available) ─────────────
-    # Step 1: Get the database schema to give the AI context
+    # ── Schema + multi-query analysis (must run before branching) ───────────────
     schema = get_database_schema()
 
-    # Step 2: Call Gemini to generate SQL + a plain-English explanation
-    try:
-        ai_result = generate_sql_and_explanation(
-            body.question,
-            schema,
-            references=filtered_examples or None,
-            thread_id=conversation_id,
-        )
-    except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="Hmm, I hit a snag putting that answer together. Could you try rephrasing your question?",
-        )
+    # Log-only length warning — do not reject long questions.
+    if len(body.question) > config.MAX_QUERY_LENGTH:
+        print(f"[WARN] Long query detected: {len(body.question)} chars")
 
-    # Extract both fields from the AI response
-    sql_query = ai_result["sql_query"]
-    explanation = ai_result["explanation"]
+    analysis = analyze_query(body.question, schema)
 
-    # ── Edge Case: Question is not related to the database ──────────────
-    # If the AI determined the question has no relation to the DB schema,
-    # return the explanation without any SQL or results.
-    if sql_query == "NOT_RELATED":
-        return QueryResponse(
+    # ── SINGLE question path — identical behavior to the original pipeline ───────
+    if analysis["type"] == "SINGLE":
+        # Security: block destructive intent before any Gemini call (single input only).
+        if is_dangerous_input(body.question):
+            return QueryResponse(
+                question=body.question,
+                sql="",
+                results=[],
+                explanation="I can only look up data for you — I can't change or delete anything in the database. Try asking a read-only question (like counts, lists, or filters) and I'll help!",
+                row_count=0,
+                conversation_id=conversation_id,
+            )
+
+        # Semantic cache: Pinecone similarity for reference examples in the prompt.
+        similar_examples = find_similar_queries(body.question, top_k=REFERENCE_TOP_K)
+
+        filtered_examples: list[dict] = []
+        for ex in similar_examples:
+            try:
+                candidate_sql = (ex.get("sql") or "").strip()
+                if candidate_sql:
+                    validate_sql(candidate_sql)
+                    filtered_examples.append(ex)
+            except QueryValidationError:
+                continue
+
+        try:
+            ai_result = generate_sql_and_explanation(
+                body.question,
+                schema,
+                references=filtered_examples or None,
+                thread_id=conversation_id,
+            )
+        except Exception:
+            raise HTTPException(
+                status_code=500,
+                detail="Hmm, I hit a snag putting that answer together. Could you try rephrasing your question?",
+            )
+
+        sql_query = ai_result["sql_query"]
+        explanation = ai_result["explanation"]
+
+        if sql_query == "NOT_RELATED":
+            return QueryResponse(
+                question=body.question,
+                sql="",
+                results=[],
+                explanation=explanation,
+                row_count=0,
+                conversation_id=conversation_id,
+            )
+
+        if not sql_query or not sql_query.strip():
+            return QueryResponse(
+                question=body.question,
+                sql="",
+                results=[],
+                explanation=explanation,
+                row_count=0,
+                conversation_id=conversation_id,
+            )
+
+        execution_result = execute_with_retry(
             question=body.question,
-            sql="",
-            results=[],
-            explanation=explanation,
-            row_count=0,
-            conversation_id=conversation_id,
+            initial_sql=sql_query,
+            schema=schema,
         )
 
-    # ── Edge Case: Gemini returned an empty SQL query ────────────────────
-    # If the AI generated an empty or whitespace-only query, return safely
-    # with empty results instead of crashing.
-    if not sql_query or not sql_query.strip():
-        return QueryResponse(
-            question=body.question,
-            sql="",
-            results=[],
-            explanation=explanation,
-            row_count=0,
-            conversation_id=conversation_id,
-        )
+        if execution_result["type"] == "DB_ERROR":
+            return QueryResponse(
+                question=body.question,
+                sql="",
+                results=[],
+                explanation=execution_result["message"],
+                row_count=0,
+                conversation_id=conversation_id,
+            )
 
-    # Step 3 + 4: Self-healing execution with retry (validation + execution + fix loop)
-    execution_result = execute_with_retry(
-        question=body.question,
-        initial_sql=sql_query,
-        schema=schema,
-    )
+        if execution_result["type"] == "SQL_ERROR":
+            return QueryResponse(
+                question=body.question,
+                sql="",
+                results=[],
+                explanation=execution_result["message"],
+                row_count=0,
+                conversation_id=conversation_id,
+            )
 
-    # Handle DB-level failures immediately (no retry loop beyond classifier stop).
-    if execution_result["type"] == "DB_ERROR":
-        return QueryResponse(
-            question=body.question,
-            sql="",
-            results=[],
-            explanation=execution_result["message"],
-            row_count=0,
-            conversation_id=conversation_id,
-        )
+        result = execution_result["results"]
+        safe_sql = execution_result["sql"]
 
-    # Handle SQL failures after repair attempts are exhausted.
-    if execution_result["type"] == "SQL_ERROR":
-        return QueryResponse(
-            question=body.question,
-            sql="",
-            results=[],
-            explanation=execution_result["message"],
-            row_count=0,
-            conversation_id=conversation_id,
-        )
+        if not result:
+            return QueryResponse(
+                question=body.question,
+                sql=safe_sql,
+                results=[],
+                explanation="I ran the query, but nothing matched — you might try broadening the filters or double-checking names and dates.",
+                row_count=0,
+                conversation_id=conversation_id,
+            )
 
-    # Success: pick the final working SQL and its query results.
-    result = execution_result["results"]
-    safe_sql = execution_result["sql"]
+        store_query(body.question, safe_sql)
 
-    # ── Edge Case: Query returned no rows ────────────────────────────────
-    # If the query ran successfully but returned no rows,
-    # set a friendly explanation message.
-    if not result:
+        row_count = len(result)
+        answer_template = ai_result.get("answer_template")
+
         return QueryResponse(
             question=body.question,
             sql=safe_sql,
-            results=[],
-            explanation="I ran the query, but nothing matched — you might try broadening the filters or double-checking names and dates.",
-            row_count=0,
+            results=result,
+            explanation=explanation,
+            row_count=row_count,
+            result_sentence=_build_result_sentence(result, answer_template),
+            result_summary=_build_result_summary(result),
+            cache_references=filtered_examples or None,
             conversation_id=conversation_id,
         )
 
-    # Step 5: Store this (question, sql) pair in Pinecone for future semantic cache hits
-    # Only store after successful execution so the cache always contains valid pairs.
-    store_query(body.question, safe_sql)
+    # ── MULTI question path — run each sub-question through a slim pipeline ───────
+    elif analysis["type"] == "MULTI":
+        query_id = str(uuid.uuid4())
+        print(f"[Multi-Query] START query_id={query_id}")
+        print(f"[Multi-Query] Sub-queries: {analysis['queries']}")
 
-    # Step 6: Build result_sentence (use AI answer_template for single value if provided)
-    row_count = len(result)
-    answer_template = ai_result.get("answer_template")
+        sub_responses: list[dict] = []
 
+        for i, sub_question in enumerate(analysis["queries"]):
+            print(
+                f"[Multi-Query] [{query_id}] Processing sub-query "
+                f"{i + 1}/{len(analysis['queries'])}: {sub_question}"
+            )
+
+            if is_dangerous_input(sub_question):
+                print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} BLOCKED — dangerous input")
+                sub_responses.append(
+                    {
+                        "question": sub_question,
+                        "sql": "",
+                        "explanation": "Only read-only queries are allowed. Data modification is not permitted.",
+                        "results": [],
+                        "row_count": 0,
+                        "result_sentence": "",
+                        "cache_references": [],
+                        "status": "error",
+                    }
+                )
+                continue
+
+            try:
+                similar = find_similar_queries(sub_question, top_k=REFERENCE_TOP_K)
+                filtered = [ex for ex in similar if _is_safe_reference(ex)]
+
+                ai_result = generate_sql_and_explanation(
+                    sub_question,
+                    schema,
+                    references=filtered or None,
+                )
+                sub_sql = ai_result["sql_query"]
+                sub_explanation = ai_result["explanation"]
+
+                if sub_sql == "NOT_RELATED":
+                    print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} — NOT_RELATED")
+                    sub_responses.append(
+                        {
+                            "question": sub_question,
+                            "sql": "",
+                            "explanation": sub_explanation,
+                            "results": [],
+                            "row_count": 0,
+                            "result_sentence": "",
+                            "cache_references": filtered,
+                            "status": "error",
+                        }
+                    )
+                    continue
+
+                execution = execute_with_retry(
+                    question=sub_question,
+                    initial_sql=sub_sql,
+                    schema=schema,
+                    max_retries=config.MAX_MULTI_RETRIES,
+                )
+
+                if execution["type"] in ("DB_ERROR", "SQL_ERROR"):
+                    print(
+                        f"[Multi-Query] [{query_id}] Sub-query {i + 1} "
+                        f"execution failed: {execution['type']}"
+                    )
+                    sub_responses.append(
+                        {
+                            "question": sub_question,
+                            "sql": "",
+                            "explanation": execution["message"],
+                            "results": [],
+                            "row_count": 0,
+                            "result_sentence": "",
+                            "cache_references": filtered,
+                            "status": "error",
+                        }
+                    )
+                    continue
+
+                sub_result = execution["results"]
+                sub_safe_sql = execution["sql"]
+                sub_row_count = len(sub_result)
+
+                if sub_result:
+                    store_query(sub_question, sub_safe_sql)
+                    print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} stored in Pinecone")
+
+                sub_sentence = _build_result_sentence(
+                    sub_result,
+                    ai_result.get("answer_template"),
+                )
+
+                sub_responses.append(
+                    {
+                        "question": sub_question,
+                        "sql": sub_safe_sql,
+                        "explanation": sub_explanation,
+                        "results": sub_result,
+                        "row_count": sub_row_count,
+                        "result_sentence": sub_sentence or "",
+                        "cache_references": filtered,
+                        "status": "success",
+                    }
+                )
+                print(
+                    f"[Multi-Query] [{query_id}] Sub-query {i + 1} SUCCESS — "
+                    f"{sub_row_count} rows returned"
+                )
+
+            except Exception as e:
+                print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} unexpected error: {e}")
+                sub_responses.append(
+                    {
+                        "question": sub_question,
+                        "sql": "",
+                        "explanation": "An unexpected error occurred. Please try rephrasing.",
+                        "results": [],
+                        "row_count": 0,
+                        "result_sentence": "",
+                        "cache_references": [],
+                        "status": "error",
+                    }
+                )
+
+        success_count = sum(1 for r in sub_responses if r["status"] == "success")
+        print(
+            f"[Multi-Query] DONE query_id={query_id} | "
+            f"{success_count}/{len(sub_responses)} succeeded"
+        )
+
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            explanation=f"{success_count} of {len(sub_responses)} queries completed successfully.",
+            row_count=0,
+            conversation_id=conversation_id,
+            is_multi=True,
+            sub_responses=sub_responses,
+        )
+
+    # Should not reach — analyzer always returns SINGLE or MULTI
     return QueryResponse(
         question=body.question,
-        sql=safe_sql,
-        results=result,
-        explanation=explanation,
-        row_count=row_count,
-        result_sentence=_build_result_sentence(result, answer_template),
-        result_summary=_build_result_summary(result),
-        cache_references=filtered_examples or None,
+        sql="",
+        results=[],
+        explanation="Hmm, something went wrong analyzing your question. Please try again.",
+        row_count=0,
         conversation_id=conversation_id,
     )

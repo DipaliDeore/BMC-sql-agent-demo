@@ -55,6 +55,137 @@ export default function MessageBubble({ message, theme }) {
     );
   }
 
+  // ── Multi-query assistant response: one block per sub-question ─────────────
+  if (message.is_multi && message.sub_responses?.length) {
+    return (
+      <div style={{ display: "flex", justifyContent: "flex-start", padding: "2px 0" }}>
+        <div
+          style={{
+            maxWidth: "min(92%, 800px)",
+            padding: "18px 20px",
+            borderRadius: "14px",
+            borderTopLeftRadius: "4px",
+            backgroundColor: "var(--assistant-bubble)",
+            border: "1px solid var(--border)",
+            color: "var(--text)",
+            boxShadow: "var(--shadow-md)",
+          }}
+        >
+          {message.explanation && (
+            <div style={{ marginBottom: "16px" }}>
+              <p style={{ fontSize: "14px", lineHeight: 1.65, color: "var(--text)", fontWeight: 600 }}>
+                {message.explanation}
+              </p>
+            </div>
+          )}
+
+          {message.sub_responses.map((sub, index) => (
+            <div
+              key={index}
+              style={{
+                marginBottom: index < message.sub_responses.length - 1 ? "20px" : 0,
+                paddingBottom: index < message.sub_responses.length - 1 ? "20px" : 0,
+                borderBottom:
+                  index < message.sub_responses.length - 1 ? "1px solid var(--border-subtle)" : "none",
+              }}
+            >
+              <p
+                style={{
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  color: "var(--text-muted)",
+                  marginBottom: "10px",
+                }}
+              >
+                Query {index + 1}: {sub.question}
+              </p>
+
+              {sub.explanation && (
+                <p style={{ fontSize: "14px", lineHeight: 1.65, color: "var(--text)", marginBottom: "12px" }}>
+                  {sub.explanation}
+                </p>
+              )}
+
+              {sub.result_sentence ? (
+                <p style={{ fontSize: "15px", lineHeight: 1.65, fontWeight: 600, color: "var(--text)", marginBottom: "12px" }}>
+                  {sub.result_sentence}
+                </p>
+              ) : sub.results && sub.results.length > 0 ? (
+                <div style={{ marginBottom: "12px" }}>
+                  <ResultTable results={sub.results} />
+                </div>
+              ) : (
+                <p style={{ fontSize: "13px", color: "var(--text-muted)", fontStyle: "italic", marginBottom: "12px" }}>
+                  No records found.
+                </p>
+              )}
+
+              {sub.sql && (
+                <div style={{ marginTop: "12px" }}>
+                  <p
+                    style={{
+                      fontSize: "11px",
+                      color: "var(--text-muted)",
+                      marginBottom: "8px",
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                    }}
+                  >
+                    Executed query
+                  </p>
+                  <SqlViewer sql={sub.sql} theme={theme} />
+                </div>
+              )}
+
+              {sub.cache_references && sub.cache_references.length > 0 && (
+                <div
+                  style={{
+                    marginTop: "12px",
+                    padding: "12px 14px",
+                    borderRadius: "10px",
+                    backgroundColor: "var(--surface-2)",
+                    border: "1px solid var(--border-subtle)",
+                  }}
+                >
+                  <p
+                    style={{
+                      fontSize: "11px",
+                      color: "var(--text-muted)",
+                      marginBottom: "8px",
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.06em",
+                    }}
+                  >
+                    Retrieved similar cached questions
+                  </p>
+                  {sub.cache_references.map((ref, i) => (
+                    <p
+                      key={i}
+                      style={{ fontSize: "12px", lineHeight: 1.5, color: "var(--text-muted)", marginTop: i ? "6px" : 0 }}
+                    >
+                      {ref.score != null ? (
+                        <>
+                          <span style={{ fontWeight: 600, color: "var(--text)" }}>{i + 1}.</span> score{" "}
+                          {ref.score} — {ref.question}
+                        </>
+                      ) : (
+                        ref.question
+                      )}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: "flex", justifyContent: "flex-start", padding: "2px 0" }}>
       <div

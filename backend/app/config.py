@@ -35,3 +35,9 @@ OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 
 # ── SQL retry configuration ──────────────────────────────────────────────────────
 MAX_SQL_RETRIES = int(os.getenv("MAX_SQL_RETRIES", "3"))
+
+# ── Multi-query analysis (LLM splitter + cache) ────────────────────────────────────
+MAX_MULTI_RETRIES = int(os.getenv("MAX_MULTI_RETRIES", "2"))
+MAX_SUB_QUERIES = int(os.getenv("MAX_SUB_QUERIES", "4"))
+MAX_QUERY_LENGTH = int(os.getenv("MAX_QUERY_LENGTH", "400"))
+MAX_ANALYSIS_CACHE_SIZE = int(os.getenv("MAX_ANALYSIS_CACHE_SIZE", "100"))

@@ -43,7 +43,12 @@ def classify_error(error_message: str) -> str:
     return "SQL_ERROR"
 
 
-def execute_with_retry(question: str, initial_sql: str, schema: str) -> dict:
+def execute_with_retry(
+    question: str,
+    initial_sql: str,
+    schema: str,
+    max_retries: int | None = None,
+) -> dict:
     """
     Execute SQL with self-healing retries.
 
@@ -53,16 +58,23 @@ def execute_with_retry(question: str, initial_sql: str, schema: str) -> dict:
     3) If SQL/validation fails, ask LLM to fix and retry (max attempts).
     4) If DB connection-like error occurs, stop immediately.
 
+    Args:
+        max_retries: Optional cap on repair attempts; defaults to config.MAX_SQL_RETRIES.
+
     Returns one of these shapes:
         {"type": "SUCCESS", "results": [...], "sql": "..."}
         {"type": "DB_ERROR", "message": "..."}
         {"type": "SQL_ERROR", "message": "..."}
     """
+    # Use parameter when provided; otherwise fall back to global default.
+    if max_retries is None:
+        max_retries = config.MAX_SQL_RETRIES
+
     retry_count = 0
     current_sql = initial_sql
     last_error = None
 
-    while retry_count < config.MAX_SQL_RETRIES:
+    while retry_count < max_retries:
         # Step 1: Validate SQL using existing guardrails (SELECT-only etc.).
         try:
             current_sql = validate_sql(current_sql)
