@@ -42,9 +42,10 @@ export function getApiErrorMessage(error) {
 /**
  * @param {string} question
  * @param {string} [conversationId] - Stable per-session id for multi-turn memory (MemorySaver thread)
+ * @param {string} [preference] - Optional user preference ("AUTO", "SINGLE", "MULTI")
  */
-export async function sendQuery(question, conversationId) {
-  const body = { question };
+export async function sendQuery(question, conversationId, preference = "AUTO") {
+  const body = { question, preference };
   if (conversationId) body.conversation_id = conversationId;
   const response = await axios.post(`${API_BASE_URL}/api/query`, body);
   return response.data;

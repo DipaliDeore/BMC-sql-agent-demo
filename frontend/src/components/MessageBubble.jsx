@@ -6,7 +6,7 @@ import React from "react";
 import ResultTable from "./ResultTable";
 import SqlViewer from "./SqlViewer";
 
-export default function MessageBubble({ message, theme }) {
+export default function MessageBubble({ message, theme, onSend }) {
   const isUser = message.role === "user";
 
   if (isUser) {
@@ -281,6 +281,47 @@ export default function MessageBubble({ message, theme }) {
               Executed query
             </p>
             <SqlViewer sql={message.sql} theme={theme} />
+          </div>
+        )}
+
+        {message.is_ambiguous && message.original_question && (
+          <div style={{ marginTop: "16px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+            <button
+              onClick={() => onSend && onSend(message.original_question, "SINGLE")}
+              style={{
+                padding: "10px 18px",
+                borderRadius: "8px",
+                backgroundColor: "var(--accent)",
+                color: "var(--accent-fg)",
+                border: "none",
+                cursor: "pointer",
+                fontSize: "13px",
+                fontWeight: 600,
+                transition: "opacity 0.2s ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.9")}
+              onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
+            >
+              Run as Single Query
+            </button>
+            <button
+              onClick={() => onSend && onSend(message.original_question, "MULTI")}
+              style={{
+                padding: "10px 18px",
+                borderRadius: "8px",
+                backgroundColor: "var(--surface-3)",
+                color: "var(--text)",
+                border: "1px solid var(--border)",
+                cursor: "pointer",
+                fontSize: "13px",
+                fontWeight: 600,
+                transition: "background-color 0.2s ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--surface-4)")}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--surface-3)")}
+            >
+              Run as Multiple Separate Queries
+            </button>
           </div>
         )}
       </div>

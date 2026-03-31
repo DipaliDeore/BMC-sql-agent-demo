@@ -40,18 +40,18 @@ export default function ChatPage({ theme, toggleTheme }) {
    * Handle sending a question to the backend.
    * Called when user clicks "Run" or presses Enter.
    */
-  async function handleSend(question) {
+  async function handleSend(question, preference = "AUTO") {
     // Add the user message to the chat
     const userMessage = {
       role: "user",
-      content: question,
+      content: preference === "AUTO" ? question : `${question} (Mode: ${preference})`,
     };
     setMessages((prev) => [...prev, userMessage]);
     setLoading(true);
 
     try {
       // Call the backend API
-      const data = await sendQuery(question, conversationIdRef.current);
+      const data = await sendQuery(question, conversationIdRef.current, preference);
       if (data.conversation_id) conversationIdRef.current = data.conversation_id;
 
       // Create the assistant response message
@@ -65,6 +65,8 @@ export default function ChatPage({ theme, toggleTheme }) {
         cache_references: data.cache_references ?? null,
         is_multi: data.is_multi ?? false,
         sub_responses: data.sub_responses ?? [],
+        is_ambiguous: data.is_ambiguous ?? false,
+        original_question: question,
       };
 
       // Add assistant message to the chat

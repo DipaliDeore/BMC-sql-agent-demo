@@ -143,6 +143,7 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
               key={msg.role === "user" ? `u-${index}-${msg.content}` : `a-${index}`}
               message={msg}
               theme={theme}
+              onSend={onSend}
             />
           ))}
         </div>
