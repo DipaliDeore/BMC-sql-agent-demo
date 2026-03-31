@@ -27,7 +27,7 @@ Analyze if this user question contains MULTIPLE INDEPENDENT database queries.
 RULES:
 - Split ONLY if queries are completely independent of each other
 - If one query needs data from another → return SINGLE
-- If question involves a JOIN between tables → return SINGLE
+- If the question is ambiguous and could reasonably be treated as either ONE joined result OR MULTIPLE separate results (e.g., "Show all customers and give total sales") → return AMBIGUOUS
 - If it is a single complex query → return SINGLE
 - If in doubt → return SINGLE
 - Maximum 4 sub-queries allowed
@@ -42,6 +42,11 @@ OR
 {{
   "type": "MULTI",
   "queries": ["sub-query 1", "sub-query 2"]
+}}
+OR
+{{
+  "type": "AMBIGUOUS",
+  "queries": ["original question here"]
 }}
 
 Do not add any text before or after the JSON.
@@ -67,6 +72,10 @@ def _validate_analysis(parsed: dict, original_question: str) -> dict:
     # If LLM said SINGLE → trust it
     if parsed["type"] == "SINGLE":
         return {"type": "SINGLE", "queries": [original_question]}
+
+    # If LLM said AMBIGUOUS → trust it
+    if parsed["type"] == "AMBIGUOUS":
+        return {"type": "AMBIGUOUS", "queries": [original_question]}
 
     # If MULTI → validate sub-queries
     if parsed["type"] == "MULTI":
@@ -102,18 +111,18 @@ def _validate_analysis(parsed: dict, original_question: str) -> dict:
     return {"type": "SINGLE", "queries": [original_question]}
 
 
-def analyze_query(question: str, schema: str) -> dict:
+def analyze_query(question: str, schema: str, preference: str = "AUTO") -> dict:
     """
     Analyze if user question contains multiple independent queries.
 
     Returns:
-        {"type": "SINGLE"|"MULTI", "queries": [...]}
+        {"type": "SINGLE"|"MULTI"|"AMBIGUOUS", "queries": [...]}
 
     Always falls back to SINGLE if anything goes wrong.
     """
     try:
         # Step 1: Normalize question for cache key
-        normalized_q = question.strip().lower()
+        normalized_q = f"{preference}:{question.strip().lower()}"
 
         # Step 2: Check cache first — avoid repeated LLM calls
         if normalized_q in _query_cache:
@@ -121,9 +130,13 @@ def analyze_query(question: str, schema: str) -> dict:
             return _query_cache[normalized_q]
 
         # Step 3: Call LLM
+        prompt_template = ANALYZER_PROMPT
+        if preference == "MULTI":
+            prompt_template += "\n\nCRITICAL INSTRUCTION: The user has EXPLICITLY requested to treat this as multiple queries. You MUST return a 'MULTI' JSON response and split the question into reasonable sub-queries. Do NOT return 'AMBIGUOUS' or 'SINGLE' unless it is absolutely impossible to split."
+
         prompt = PromptTemplate(
             input_variables=["schema", "question"],
-            template=ANALYZER_PROMPT,
+            template=prompt_template,
         )
         llm = ChatGoogleGenerativeAI(
             model="gemini-flash-latest",

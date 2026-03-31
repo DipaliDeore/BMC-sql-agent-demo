@@ -11,6 +11,7 @@ Endpoints:
     POST /api/query     — Ask a natural language question → get SQL + results + explanation
 """
 
+import asyncio
 import uuid
 
 from fastapi import APIRouter, HTTPException
@@ -39,6 +40,7 @@ class QueryRequest(BaseModel):
     question: str  # The user's natural language question
     # Stable id per browser session so LangGraph MemorySaver can recall prior turns
     conversation_id: str | None = None
+    preference: str | None = "AUTO"  # "AUTO", "SINGLE", "MULTI"
 
 
 class QueryResponse(BaseModel):
@@ -54,6 +56,7 @@ class QueryResponse(BaseModel):
     # This does not affect the main logic.
     cache_references: list[dict] | None = None
     conversation_id: str | None = None  # Echo effective thread id — reuse on later requests
+    is_ambiguous: bool = False  # Flag to prompt user for preference
     # Multi-query responses (optional; defaults keep single-query clients unchanged)
     is_multi: bool = False
     sub_responses: list[dict] = Field(default_factory=list)
@@ -119,6 +122,65 @@ def _build_result_summary(results: list[dict]) -> str | None:
         label = key.replace("SUM(", "").replace(")", "").replace("(", " ").strip() or key
         parts.append(f"{label}: {s}")
     return " · ".join(parts)
+
+
+def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query_id: str, schema: str) -> dict:
+    print(f"[Multi-Query] [{query_id}] Processing sub-query {i + 1}/{total_queries}: {sub_question}")
+
+    if is_dangerous_input(sub_question):
+        print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} BLOCKED — dangerous input")
+        return {
+            "question": sub_question, "sql": "", "explanation": "Only read-only queries are allowed. Data modification is not permitted.",
+            "results": [], "row_count": 0, "result_sentence": "", "cache_references": [], "status": "error"
+        }
+
+    try:
+        similar = find_similar_queries(sub_question, top_k=REFERENCE_TOP_K)
+        filtered = [ex for ex in similar if _is_safe_reference(ex)]
+
+        ai_result = generate_sql_and_explanation(sub_question, schema, references=filtered or None)
+        sub_sql = ai_result["sql_query"]
+        sub_explanation = ai_result["explanation"]
+
+        if sub_sql == "NOT_RELATED":
+            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} — NOT_RELATED")
+            return {
+                "question": sub_question, "sql": "", "explanation": sub_explanation,
+                "results": [], "row_count": 0, "result_sentence": "", "cache_references": filtered, "status": "error"
+            }
+
+        execution = execute_with_retry(question=sub_question, initial_sql=sub_sql, schema=schema, max_retries=config.MAX_MULTI_RETRIES)
+
+        if execution["type"] in ("DB_ERROR", "SQL_ERROR"):
+            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} execution failed: {execution['type']}")
+            return {
+                "question": sub_question, "sql": "", "explanation": execution["message"],
+                "results": [], "row_count": 0, "result_sentence": "", "cache_references": filtered, "status": "error"
+            }
+
+        sub_result = execution["results"]
+        sub_safe_sql = execution["sql"]
+        sub_row_count = len(sub_result)
+
+        if sub_result:
+            store_query(sub_question, sub_safe_sql)
+            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} stored in Pinecone")
+
+        sub_sentence = _build_result_sentence(sub_result, ai_result.get("answer_template"))
+
+        print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} SUCCESS — {sub_row_count} rows returned")
+        return {
+            "question": sub_question, "sql": sub_safe_sql, "explanation": sub_explanation,
+            "results": sub_result, "row_count": sub_row_count, "result_sentence": sub_sentence or "",
+            "cache_references": filtered, "status": "success"
+        }
+
+    except Exception as e:
+        print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} unexpected error: {e}")
+        return {
+            "question": sub_question, "sql": "", "explanation": "An unexpected error occurred. Please try rephrasing.",
+            "results": [], "row_count": 0, "result_sentence": "", "cache_references": [], "status": "error"
+        }
 
 
 # ── Endpoint 1: Test Database Connection ──────────────────────────────────────
@@ -204,7 +266,23 @@ async def handle_query(body: QueryRequest):
     if len(body.question) > config.MAX_QUERY_LENGTH:
         print(f"[WARN] Long query detected: {len(body.question)} chars")
 
-    analysis = analyze_query(body.question, schema)
+    pref = (body.preference or "AUTO").upper()
+    
+    if pref == "SINGLE":
+        analysis = {"type": "SINGLE", "queries": [body.question]}
+    else:
+        analysis = analyze_query(body.question, schema, pref)
+
+    if analysis["type"] == "AMBIGUOUS":
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            explanation="I can treat this as a single combined look-up, or split it into separate queries. What works best for you?",
+            row_count=0,
+            conversation_id=conversation_id,
+            is_ambiguous=True
+        )
 
     # ── SINGLE question path — identical behavior to the original pipeline ───────
     if analysis["type"] == "SINGLE":
@@ -328,130 +406,15 @@ async def handle_query(body: QueryRequest):
     elif analysis["type"] == "MULTI":
         query_id = str(uuid.uuid4())
         print(f"[Multi-Query] START query_id={query_id}")
-        print(f"[Multi-Query] Sub-queries: {analysis['queries']}")
+        queries = analysis['queries']
+        print(f"[Multi-Query] Sub-queries: {queries}")
 
-        sub_responses: list[dict] = []
-
-        for i, sub_question in enumerate(analysis["queries"]):
-            print(
-                f"[Multi-Query] [{query_id}] Processing sub-query "
-                f"{i + 1}/{len(analysis['queries'])}: {sub_question}"
-            )
-
-            if is_dangerous_input(sub_question):
-                print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} BLOCKED — dangerous input")
-                sub_responses.append(
-                    {
-                        "question": sub_question,
-                        "sql": "",
-                        "explanation": "Only read-only queries are allowed. Data modification is not permitted.",
-                        "results": [],
-                        "row_count": 0,
-                        "result_sentence": "",
-                        "cache_references": [],
-                        "status": "error",
-                    }
-                )
-                continue
-
-            try:
-                similar = find_similar_queries(sub_question, top_k=REFERENCE_TOP_K)
-                filtered = [ex for ex in similar if _is_safe_reference(ex)]
-
-                ai_result = generate_sql_and_explanation(
-                    sub_question,
-                    schema,
-                    references=filtered or None,
-                )
-                sub_sql = ai_result["sql_query"]
-                sub_explanation = ai_result["explanation"]
-
-                if sub_sql == "NOT_RELATED":
-                    print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} — NOT_RELATED")
-                    sub_responses.append(
-                        {
-                            "question": sub_question,
-                            "sql": "",
-                            "explanation": sub_explanation,
-                            "results": [],
-                            "row_count": 0,
-                            "result_sentence": "",
-                            "cache_references": filtered,
-                            "status": "error",
-                        }
-                    )
-                    continue
-
-                execution = execute_with_retry(
-                    question=sub_question,
-                    initial_sql=sub_sql,
-                    schema=schema,
-                    max_retries=config.MAX_MULTI_RETRIES,
-                )
-
-                if execution["type"] in ("DB_ERROR", "SQL_ERROR"):
-                    print(
-                        f"[Multi-Query] [{query_id}] Sub-query {i + 1} "
-                        f"execution failed: {execution['type']}"
-                    )
-                    sub_responses.append(
-                        {
-                            "question": sub_question,
-                            "sql": "",
-                            "explanation": execution["message"],
-                            "results": [],
-                            "row_count": 0,
-                            "result_sentence": "",
-                            "cache_references": filtered,
-                            "status": "error",
-                        }
-                    )
-                    continue
-
-                sub_result = execution["results"]
-                sub_safe_sql = execution["sql"]
-                sub_row_count = len(sub_result)
-
-                if sub_result:
-                    store_query(sub_question, sub_safe_sql)
-                    print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} stored in Pinecone")
-
-                sub_sentence = _build_result_sentence(
-                    sub_result,
-                    ai_result.get("answer_template"),
-                )
-
-                sub_responses.append(
-                    {
-                        "question": sub_question,
-                        "sql": sub_safe_sql,
-                        "explanation": sub_explanation,
-                        "results": sub_result,
-                        "row_count": sub_row_count,
-                        "result_sentence": sub_sentence or "",
-                        "cache_references": filtered,
-                        "status": "success",
-                    }
-                )
-                print(
-                    f"[Multi-Query] [{query_id}] Sub-query {i + 1} SUCCESS — "
-                    f"{sub_row_count} rows returned"
-                )
-
-            except Exception as e:
-                print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} unexpected error: {e}")
-                sub_responses.append(
-                    {
-                        "question": sub_question,
-                        "sql": "",
-                        "explanation": "An unexpected error occurred. Please try rephrasing.",
-                        "results": [],
-                        "row_count": 0,
-                        "result_sentence": "",
-                        "cache_references": [],
-                        "status": "error",
-                    }
-                )
+        loop = asyncio.get_running_loop()
+        tasks = [
+            loop.run_in_executor(None, _process_sub_query_sync, sub_question, i, len(queries), query_id, schema)
+            for i, sub_question in enumerate(queries)
+        ]
+        sub_responses = await asyncio.gather(*tasks)
 
         success_count = sum(1 for r in sub_responses if r["status"] == "success")
         print(
