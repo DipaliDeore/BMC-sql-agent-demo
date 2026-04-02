@@ -24,6 +24,7 @@ from app.sql_generator import generate_sql_and_explanation, is_dangerous_input
 from app.query_validator import validate_sql, QueryValidationError
 from app.search import REFERENCE_TOP_K, find_similar_queries
 from app.sql_retry_engine import execute_with_retry
+from app.agent_executor import generate_and_execute_with_tools
 from app.store import store_query
 
 
@@ -138,35 +139,49 @@ def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query
         similar = find_similar_queries(sub_question, top_k=REFERENCE_TOP_K)
         filtered = [ex for ex in similar if _is_safe_reference(ex)]
 
-        ai_result = generate_sql_and_explanation(sub_question, schema, references=filtered or None)
-        sub_sql = ai_result["sql_query"]
-        sub_explanation = ai_result["explanation"]
+        # Tool calling for sub-query
+        tool_result = generate_and_execute_with_tools(
+            question=sub_question,
+            schema=schema,
+            references=filtered or None,
+        )
 
-        if sub_sql == "NOT_RELATED":
+        if tool_result["status"] == "not_related":
             print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} — NOT_RELATED")
             return {
-                "question": sub_question, "sql": "", "explanation": sub_explanation,
-                "results": [], "row_count": 0, "result_sentence": "", "cache_references": filtered, "status": "error"
+                "question": sub_question,
+                "sql": "",
+                "explanation": tool_result["explanation"],
+                "results": [],
+                "row_count": 0,
+                "result_sentence": "",
+                "cache_references": filtered,
+                "status": "error",
             }
 
-        execution = execute_with_retry(question=sub_question, initial_sql=sub_sql, schema=schema, max_retries=config.MAX_MULTI_RETRIES)
-
-        if execution["type"] in ("DB_ERROR", "SQL_ERROR"):
-            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} execution failed: {execution['type']}")
+        if tool_result["status"] in ("db_error", "sql_error"):
+            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} failed: {tool_result['status']}")
             return {
-                "question": sub_question, "sql": "", "explanation": execution["message"],
-                "results": [], "row_count": 0, "result_sentence": "", "cache_references": filtered, "status": "error"
+                "question": sub_question,
+                "sql": "",
+                "explanation": tool_result["explanation"],
+                "results": [],
+                "row_count": 0,
+                "result_sentence": "",
+                "cache_references": filtered,
+                "status": "error",
             }
 
-        sub_result = execution["results"]
-        sub_safe_sql = execution["sql"]
+        sub_result = tool_result["results"]
+        sub_safe_sql = tool_result["sql_query"]
+        sub_explanation = tool_result["explanation"]
         sub_row_count = len(sub_result)
 
         if sub_result:
             store_query(sub_question, sub_safe_sql)
             print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} stored in Pinecone")
 
-        sub_sentence = _build_result_sentence(sub_result, ai_result.get("answer_template"))
+        sub_sentence = _build_result_sentence(sub_result, None)
 
         print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} SUCCESS — {sub_row_count} rows returned")
         return {
@@ -310,85 +325,60 @@ async def handle_query(body: QueryRequest):
             except QueryValidationError:
                 continue
 
-        try:
-            ai_result = generate_sql_and_explanation(
-                body.question,
-                schema,
-                references=filtered_examples or None,
-                thread_id=conversation_id,
-            )
-        except Exception:
-            raise HTTPException(
-                status_code=500,
-                detail="Hmm, I hit a snag putting that answer together. Could you try rephrasing your question?",
-            )
-
-        sql_query = ai_result["sql_query"]
-        explanation = ai_result["explanation"]
-
-        if sql_query == "NOT_RELATED":
-            return QueryResponse(
-                question=body.question,
-                sql="",
-                results=[],
-                explanation=explanation,
-                row_count=0,
-                conversation_id=conversation_id,
-            )
-
-        if not sql_query or not sql_query.strip():
-            return QueryResponse(
-                question=body.question,
-                sql="",
-                results=[],
-                explanation=explanation,
-                row_count=0,
-                conversation_id=conversation_id,
-            )
-
-        execution_result = execute_with_retry(
+        # Tool calling — LLM generates SQL and executes via tool in one loop
+        tool_result = generate_and_execute_with_tools(
             question=body.question,
-            initial_sql=sql_query,
             schema=schema,
+            references=filtered_examples or None,
         )
 
-        if execution_result["type"] == "DB_ERROR":
+        if tool_result["status"] == "db_error":
             return QueryResponse(
                 question=body.question,
                 sql="",
                 results=[],
-                explanation=execution_result["message"],
                 row_count=0,
+                explanation=tool_result["explanation"],
                 conversation_id=conversation_id,
             )
 
-        if execution_result["type"] == "SQL_ERROR":
+        if tool_result["status"] == "not_related":
             return QueryResponse(
                 question=body.question,
                 sql="",
                 results=[],
-                explanation=execution_result["message"],
                 row_count=0,
+                explanation=tool_result["explanation"],
                 conversation_id=conversation_id,
             )
 
-        result = execution_result["results"]
-        safe_sql = execution_result["sql"]
+        if tool_result["status"] == "sql_error":
+            return QueryResponse(
+                question=body.question,
+                sql="",
+                results=[],
+                row_count=0,
+                explanation="Sorry, could not generate a valid query. Please rephrasing.",
+                conversation_id=conversation_id,
+            )
+
+        result = tool_result["results"]
+        safe_sql = tool_result["sql_query"]
+        explanation = tool_result["explanation"]
+        answer_template = None
 
         if not result:
             return QueryResponse(
                 question=body.question,
                 sql=safe_sql,
                 results=[],
-                explanation="I ran the query, but nothing matched — you might try broadening the filters or double-checking names and dates.",
                 row_count=0,
+                explanation="I ran the query but nothing matched. Try broadening your filters.",
                 conversation_id=conversation_id,
             )
 
         store_query(body.question, safe_sql)
-
         row_count = len(result)
-        answer_template = ai_result.get("answer_template")
 
         return QueryResponse(
             question=body.question,

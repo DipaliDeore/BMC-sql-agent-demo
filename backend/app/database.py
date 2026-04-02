@@ -32,9 +32,9 @@ def get_db_connection():
         Exception: If the connection cannot be established.
     """
     # SSL configuration — TiDB Cloud requires a CA certificate for secure connections.
-    ssl_config = {
-        "ca": config.DB_CA_CERT  # Path to the CA cert downloaded from TiDB console
-    }
+    # ssl_config = {
+    #     "ca": config.DB_CA_CERT  # Path to the CA cert downloaded from TiDB console
+    # }
 
     try:
         connection = mysql.connector.connect(
@@ -43,13 +43,15 @@ def get_db_connection():
             user=config.DB_USER,
             password=config.DB_PASSWORD,
             database=config.DB_NAME,
-            ssl_ca=ssl_config["ca"],   # Use the CA cert for SSL
-            ssl_verify_cert=True,      # Verify the server's certificate
+            ssl_ca=config.DB_CA_CERT,
+            ssl_verify_cert=True,
+            ssl_verify_identity=True,
+            use_pure=True,
+            autocommit=True
         )
         return connection
 
     except Error as e:
-        # Re-raise so the calling function can handle and return a proper error
         raise Exception(f"Database connection failed: {str(e)}")
 
 
