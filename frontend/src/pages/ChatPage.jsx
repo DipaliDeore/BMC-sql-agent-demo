@@ -40,18 +40,18 @@ export default function ChatPage({ theme, toggleTheme }) {
    * Handle sending a question to the backend.
    * Called when user clicks "Run" or presses Enter.
    */
-  async function handleSend(question, preference = "AUTO") {
+  async function handleSend(question) {
     // Add the user message to the chat
     const userMessage = {
       role: "user",
-      content: preference === "AUTO" ? question : `${question} (Mode: ${preference})`,
+      content: question,
     };
     setMessages((prev) => [...prev, userMessage]);
     setLoading(true);
 
     try {
       // Call the backend API
-      const data = await sendQuery(question, conversationIdRef.current, preference);
+      const data = await sendQuery(question, conversationIdRef.current, "AUTO");
       if (data.conversation_id) conversationIdRef.current = data.conversation_id;
 
       // Create the assistant response message

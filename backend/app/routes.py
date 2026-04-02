@@ -288,16 +288,7 @@ async def handle_query(body: QueryRequest):
     else:
         analysis = analyze_query(body.question, schema, pref)
 
-    if analysis["type"] == "AMBIGUOUS":
-        return QueryResponse(
-            question=body.question,
-            sql="",
-            results=[],
-            explanation="I can treat this as a single combined look-up, or split it into separate queries. What works best for you?",
-            row_count=0,
-            conversation_id=conversation_id,
-            is_ambiguous=True
-        )
+
 
     # ── SINGLE question path — identical behavior to the original pipeline ───────
     if analysis["type"] == "SINGLE":

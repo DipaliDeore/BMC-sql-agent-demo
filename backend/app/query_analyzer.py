@@ -73,9 +73,9 @@ def _validate_analysis(parsed: dict, original_question: str) -> dict:
     if parsed["type"] == "SINGLE":
         return {"type": "SINGLE", "queries": [original_question]}
 
-    # If LLM said AMBIGUOUS → trust it
+    # If LLM said AMBIGUOUS → treat as SINGLE
     if parsed["type"] == "AMBIGUOUS":
-        return {"type": "AMBIGUOUS", "queries": [original_question]}
+        return {"type": "SINGLE", "queries": [original_question]}
 
     # If MULTI → validate sub-queries
     if parsed["type"] == "MULTI":
