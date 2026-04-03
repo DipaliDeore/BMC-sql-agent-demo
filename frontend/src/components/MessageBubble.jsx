@@ -73,7 +73,15 @@ export default function MessageBubble({ message, theme, onSend }) {
         >
           {message.explanation && (
             <div style={{ marginBottom: "16px" }}>
-              <p style={{ fontSize: "14px", lineHeight: 1.65, color: "var(--text)", fontWeight: 600 }}>
+              <p
+                style={{
+                  fontSize: "14px",
+                  lineHeight: 1.65,
+                  color: "var(--text)",
+                  fontWeight: 600,
+                  whiteSpace: "pre-line",
+                }}
+              >
                 {message.explanation}
               </p>
             </div>
@@ -103,7 +111,15 @@ export default function MessageBubble({ message, theme, onSend }) {
               </p>
 
               {sub.explanation && (
-                <p style={{ fontSize: "14px", lineHeight: 1.65, color: "var(--text)", marginBottom: "12px" }}>
+                <p
+                  style={{
+                    fontSize: "14px",
+                    lineHeight: 1.65,
+                    color: "var(--text)",
+                    marginBottom: "12px",
+                    whiteSpace: "pre-line",
+                  }}
+                >
                   {sub.explanation}
                 </p>
               )}
@@ -164,7 +180,14 @@ export default function MessageBubble({ message, theme, onSend }) {
       >
         {message.explanation && (
           <div style={{ marginBottom: "14px" }}>
-            <p style={{ fontSize: "14px", lineHeight: 1.65, color: "var(--text)" }}>
+            <p
+              style={{
+                fontSize: "14px",
+                lineHeight: 1.65,
+                color: "var(--text)",
+                whiteSpace: "pre-line",
+              }}
+            >
               {message.explanation}
             </p>
           </div>

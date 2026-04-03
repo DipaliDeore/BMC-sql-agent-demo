@@ -16,6 +16,8 @@ from app import config
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 
+_openai_client = None
+
 _MONTH_PATTERN = re.compile(
     r"\b(january|february|march|april|may|june|july|august|september|october|november|december|"
     r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b",
@@ -60,9 +62,12 @@ def get_embedding(text: str) -> Optional[List[float]]:
     try:
         from openai import OpenAI
 
+        global _openai_client
+        if _openai_client is None:
+            _openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
+
         normalized = normalize_query_for_embedding(text)
-        client = OpenAI(api_key=config.OPENAI_API_KEY)
-        response = client.embeddings.create(
+        response = _openai_client.embeddings.create(
             input=[normalized],
             model=EMBEDDING_MODEL,
         )

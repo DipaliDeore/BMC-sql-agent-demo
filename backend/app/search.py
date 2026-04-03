@@ -18,11 +18,11 @@ from app.pinecone_client import get_pinecone_index
 SIMILARITY_THRESHOLD = 0.78
 
 # Number of references passed to the LLM after filtering
-REFERENCE_TOP_K = 5
+REFERENCE_TOP_K = 3
 
 # Fetch more neighbors from Pinecone, then filter by threshold (improves recall)
-_OVERFETCH_FACTOR = 4
-_OVERFETCH_MIN = 16
+_OVERFETCH_FACTOR = 3
+_OVERFETCH_MIN = 8
 _OVERFETCH_CAP = 100
 
 
