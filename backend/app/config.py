@@ -26,9 +26,9 @@ DB_NAME: str     = os.getenv("DB_NAME", "sql_agent_demo")
 # Path to the TiDB Cloud SSL CA certificate file (download from TiDB console)
 DB_CA_CERT: str  = os.getenv("DB_CA_CERT", "")
 
-# ── Pinecone (semantic cache for question → SQL) ───────────────────────────────
-PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
-PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "sql-agent-cache")
+# ── OpenSearch (semantic cache for question → SQL) ─────────────────────────────
+OPENSEARCH_URL: str = os.getenv("OPENSEARCH_URL", "http://localhost:9200")
+OPENSEARCH_INDEX_NAME: str = os.getenv("OPENSEARCH_INDEX_NAME", "sql-agent-cache")
 
 # ── OpenAI (embeddings for Pinecone; text-embedding-3-small) ───────────────────
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")

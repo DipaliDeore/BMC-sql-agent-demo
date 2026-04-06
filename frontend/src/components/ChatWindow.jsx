@@ -132,7 +132,7 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
                 marginBottom: 0,
               }}
             >
-              Describe what you want to know. The assistant generates SQL, runs it, and summarizes results.
+              Describe what you want to know. The assistant finds the relevant data and summarizes the results.
             </p>
           </div>
         )}

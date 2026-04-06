@@ -15,6 +15,18 @@ from typing import List, Optional
 from app import config
 
 EMBEDDING_MODEL = "text-embedding-3-small"
+_openai_client = None
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        if not (config.OPENAI_API_KEY or "").strip():
+            return None
+        from openai import OpenAI
+
+        _openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
+    return _openai_client
 
 _MONTH_PATTERN = re.compile(
     r"\b(january|february|march|april|may|june|july|august|september|october|november|december|"
@@ -54,14 +66,15 @@ def get_embedding(text: str) -> Optional[List[float]]:
     Uses ``normalize_query_for_embedding`` so Pinecone upserts and queries
     stay aligned.
     """
-    if not text or not (config.OPENAI_API_KEY or "").strip():
+    if not text:
         return None
 
     try:
-        from openai import OpenAI
+        client = _get_openai_client()
+        if client is None:
+            return None
 
         normalized = normalize_query_for_embedding(text)
-        client = OpenAI(api_key=config.OPENAI_API_KEY)
         response = client.embeddings.create(
             input=[normalized],
             model=EMBEDDING_MODEL,

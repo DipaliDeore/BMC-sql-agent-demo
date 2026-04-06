@@ -7,5 +7,5 @@ langgraph
 python-dotenv
 mysql-connector-python
 pydantic
-pinecone
+opensearch-py
 openai

@@ -12,7 +12,26 @@ from app import config
 
 
 AVAILABLE_TOOLS = [run_sql_query]
-MAX_AGENT_ITERATIONS = 6
+MAX_AGENT_ITERATIONS = 4  # Reduced: 1 SQL call + 1 explanation + 2 retries max
+
+
+# ---------------------------------------------------------------------------
+# MODULE-LEVEL LLM SINGLETON (avoids re-initialization overhead per request)
+# ---------------------------------------------------------------------------
+_llm: ChatGoogleGenerativeAI | None = None
+_llm_with_tools = None
+
+
+def _get_llm_with_tools():
+    global _llm, _llm_with_tools
+    if _llm_with_tools is None:
+        _llm = ChatGoogleGenerativeAI(
+            model="gemini-flash-latest",
+            google_api_key=config.GEMINI_API_KEY,
+            temperature=0,
+        )
+        _llm_with_tools = _llm.bind_tools(AVAILABLE_TOOLS)
+    return _llm_with_tools
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +57,19 @@ def make_json_serializable(obj):
         return [make_json_serializable(i) for i in obj]
 
     return obj
+
+
+# ---------------------------------------------------------------------------
+def _build_success_explanation(row_count: int) -> str:
+    """
+    Return a concise, human-friendly explanation without an extra LLM call.
+    Saves ~15-20s by skipping the second agent iteration after tool success.
+    """
+    if row_count == 0:
+        return "The query ran successfully but no matching records were found."
+    if row_count == 1:
+        return "Got it! Here's what I found for you."
+    return f"Here you go — found {row_count:,} records matching your query."
 
 
 # ---------------------------------------------------------------------------
@@ -77,13 +109,7 @@ def generate_and_execute_with_tools(
 
     print(f"[AgentExecutor] Starting — question: {question[:80]}")
 
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-flash-latest",
-        google_api_key=config.GEMINI_API_KEY,
-        temperature=0,
-    )
-
-    llm_with_tools = llm.bind_tools(AVAILABLE_TOOLS)
+    llm_with_tools = _get_llm_with_tools()  # Cached singleton — no re-init overhead
 
     system_content = f"""You are an expert SQL query generator for a MySQL database.
 
@@ -210,19 +236,12 @@ References:
             )
 
         # -------------------------------------------------------------------
-        # FINAL EXPLANATION (RATE LIMIT SAFE)
+        # After tool success: break immediately with a template explanation.
+        # This skips the second LLM round-trip (saves ~15-20s per query).
+        # The template is concise and human-friendly.
         # -------------------------------------------------------------------
         if all_success:
-            try:
-                final_resp = llm_with_tools.invoke(messages)
-                final_explanation = extract_text(final_resp.content) or "Query executed successfully."
-            except Exception as e:
-                error_str = str(e).lower()
-                if "429" in error_str or "resource_exhausted" in error_str:
-                    final_explanation = f"Found {len(final_results)} result(s) successfully."
-                else:
-                    final_explanation = "Query executed successfully."
-
+            final_explanation = _build_success_explanation(len(final_results))
             break
 
     if not final_sql and status == "success":

@@ -6,8 +6,8 @@ import React, { useState, useEffect } from "react";
 
 const LOADING_MESSAGES = [
   "Taking a look at your question…",
-  "Working out the right query…",
-  "Grabbing your results…",
+  "Finding the right information…",
+  "Putting together your results…",
 ];
 
 export default function LoadingMessage() {

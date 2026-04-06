@@ -12,6 +12,7 @@ Endpoints:
 """
 
 import asyncio
+import re
 import uuid
 
 from fastapi import APIRouter, HTTPException
@@ -32,6 +33,39 @@ from app.store import store_query
 # All routes defined here will automatically get the /api prefix.
 # Example: "/query" becomes "/api/query"
 router = APIRouter(prefix="/api", tags=["SQL Agent"])
+
+
+# ── Fast-path helpers (zero LLM calls) ───────────────────────────────────────
+
+_GREETING_PHRASES = frozenset({
+    "hi", "hello", "hey", "howdy", "hiya", "sup", "greetings",
+    "good morning", "good afternoon", "good evening", "good day",
+    "how are you", "how are you doing", "how is it going",
+    "hi there", "hello there", "hey there", "what's up", "whats up",
+    "yo", "namaste", "helo", "hii", "hiii",
+})
+
+
+def _is_pure_greeting(question: str) -> bool:
+    """Return True for pure greetings/small-talk — no DB question present."""
+    q = re.sub(r"[^\w\s]", "", question.strip().lower())
+    q = " ".join(q.split())
+    return q in _GREETING_PHRASES
+
+
+# Indicators that strongly suggest a multi-part question.
+_MULTI_INDICATORS = (
+    " and also ", " and also show ", " additionally ", " also show ",
+    " also find ", " also give ", " as well as ", " separately ",
+    " in addition", " furthermore", " moreover", " along with ",
+    "1.", "2.", "1)", "2)",
+)
+
+
+def _is_clearly_single(question: str) -> bool:
+    """Return True when no multi-query indicators are present — safe to skip LLM analysis."""
+    q = question.lower()
+    return not any(ind in q for ind in _MULTI_INDICATORS)
 
 
 # ── Request / Response Models ─────────────────────────────────────────────────
@@ -125,7 +159,7 @@ def _build_result_summary(results: list[dict]) -> str | None:
     return " · ".join(parts)
 
 
-def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query_id: str, schema: str) -> dict:
+def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query_id: str, schema: str, loop: asyncio.AbstractEventLoop = None) -> dict:
     print(f"[Multi-Query] [{query_id}] Processing sub-query {i + 1}/{total_queries}: {sub_question}")
 
     if is_dangerous_input(sub_question):
@@ -178,8 +212,14 @@ def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query
         sub_row_count = len(sub_result)
 
         if sub_result:
-            store_query(sub_question, sub_safe_sql)
-            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} stored in Pinecone")
+            if loop:
+                loop.call_soon_threadsafe(
+                    lambda: loop.run_in_executor(None, store_query, sub_question, sub_safe_sql)
+                )
+                print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} scheduled for background storage")
+            else:
+                # Fallback if loop is missing
+                store_query(sub_question, sub_safe_sql)
 
         sub_sentence = _build_result_sentence(sub_result, None)
 
@@ -263,13 +303,28 @@ async def handle_query(body: QueryRequest):
     """
     conversation_id = (body.conversation_id or "").strip() or str(uuid.uuid4())
 
-    # Empty question — respond in chat style (still a normal JSON body for clients)
+    # Empty question
     if not body.question.strip():
         return QueryResponse(
             question=body.question,
             sql="",
             results=[],
             explanation="Hmm, I didn't quite catch that — could you ask that again with a bit more detail?",
+            row_count=0,
+            conversation_id=conversation_id,
+        )
+
+    # ── Greeting fast-path — zero LLM calls, instant response ───────────────────
+    if _is_pure_greeting(body.question):
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            explanation=(
+                "Hi! I'm doing great, thanks for asking. 😊 "
+                "I can help you explore your app's data — like customers, products, "
+                "orders, or line items. What would you like to look into?"
+            ),
             row_count=0,
             conversation_id=conversation_id,
         )
@@ -282,11 +337,30 @@ async def handle_query(body: QueryRequest):
         print(f"[WARN] Long query detected: {len(body.question)} chars")
 
     pref = (body.preference or "AUTO").upper()
-    
+
+    # ── Parallel I/O: query analysis + Pinecone semantic search ────────────────
+    loop = asyncio.get_running_loop()
+
     if pref == "SINGLE":
+        # Decision already made — skip LLM analysis entirely.
         analysis = {"type": "SINGLE", "queries": [body.question]}
+        similar_examples_raw = await loop.run_in_executor(
+            None, find_similar_queries, body.question, REFERENCE_TOP_K
+        )
+    elif pref != "MULTI" and _is_clearly_single(body.question):
+        # AUTO pref + no multi-query indicators — safe to skip analyze_query LLM call.
+        # This saves ~15-20s for the vast majority of normal questions.
+        print("[Routes] Heuristic: clearly single question — skipping analyze_query LLM call")
+        analysis = {"type": "SINGLE", "queries": [body.question]}
+        similar_examples_raw = await loop.run_in_executor(
+            None, find_similar_queries, body.question, REFERENCE_TOP_K
+        )
     else:
-        analysis = analyze_query(body.question, schema, pref)
+        # AUTO with multi-indicators OR explicit MULTI pref — run LLM analysis.
+        analysis, similar_examples_raw = await asyncio.gather(
+            loop.run_in_executor(None, analyze_query, body.question, schema, pref),
+            loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K),
+        )
 
 
 
@@ -304,10 +378,9 @@ async def handle_query(body: QueryRequest):
             )
 
         # Semantic cache: Pinecone similarity for reference examples in the prompt.
-        similar_examples = find_similar_queries(body.question, top_k=REFERENCE_TOP_K)
-
+        # Results already fetched concurrently above — just filter for safety.
         filtered_examples: list[dict] = []
-        for ex in similar_examples:
+        for ex in similar_examples_raw:
             try:
                 candidate_sql = (ex.get("sql") or "").strip()
                 if candidate_sql:
@@ -368,7 +441,9 @@ async def handle_query(body: QueryRequest):
                 conversation_id=conversation_id,
             )
 
-        store_query(body.question, safe_sql)
+        # Fire-and-forget: store in Pinecone after response — don't block the user.
+        # store_query does OpenAI embedding + Pinecone upsert (~5-8s) — not worth waiting for.
+        loop.run_in_executor(None, store_query, body.question, safe_sql)
         row_count = len(result)
 
         return QueryResponse(
@@ -392,7 +467,7 @@ async def handle_query(body: QueryRequest):
 
         loop = asyncio.get_running_loop()
         tasks = [
-            loop.run_in_executor(None, _process_sub_query_sync, sub_question, i, len(queries), query_id, schema)
+            loop.run_in_executor(None, _process_sub_query_sync, sub_question, i, len(queries), query_id, schema, loop)
             for i, sub_question in enumerate(queries)
         ]
         sub_responses = await asyncio.gather(*tasks)
