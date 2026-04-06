@@ -387,14 +387,18 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
         print(f"[WARN] Long query detected: {len(body.question)} chars")
 
     pref = (body.preference or "AUTO").upper()
+    loop = asyncio.get_running_loop()
+    similar_examples_raw = []
 
     if pref == "SINGLE":
         # Decision already made — skip LLM analysis entirely.
         analysis = {"type": "SINGLE", "queries": [body.question]}
+        similar_examples_raw = await loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K)
     elif pref == "MULTI":
-        analysis = analyze_query(body.question, schema, pref)
+        analysis = await loop.run_in_executor(None, analyze_query, body.question, schema, pref)
     elif config.SKIP_MULTI_QUERY_LLM:
         analysis = {"type": "SINGLE", "queries": [body.question]}
+        similar_examples_raw = await loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K)
     else:
         # AUTO with multi-indicators OR explicit MULTI pref — run LLM analysis.
         analysis, similar_examples_raw = await asyncio.gather(

@@ -21,7 +21,7 @@ SIMILARITY_THRESHOLD = 0.78
 # Number of references passed to the LLM after filtering
 REFERENCE_TOP_K = 3
 
-# Fetch more neighbors from Pinecone, then filter by threshold (improves recall)
+# Fetch more neighbors from OpenSearch, then filter by threshold (improves recall)
 _OVERFETCH_FACTOR = 3
 _OVERFETCH_MIN = 8
 _OVERFETCH_CAP = 100
@@ -36,28 +36,6 @@ def _similarity_score_to_unit_interval(raw: float) -> float:
         return 0.0
     return max(0.0, min(1.0, x))
 
-
-<<<<<<< Updated upstream
-def _matches_from_results(results: Any) -> list[dict[str, Any]]:
-    """Convert Pinecone query results to normalized match dicts."""
-    matches: list[dict[str, Any]] = []
-    if not results or not getattr(results, "matches", None):
-        return matches
-
-    for match in results.matches:
-        score = getattr(match, "score", None)
-        if score is None:
-            continue
-        metadata = getattr(match, "metadata", None) or {}
-        matches.append(
-            {
-                "score": _similarity_score_to_unit_interval(score),
-                "question": metadata.get("question") or "",
-                "sql": metadata.get("sql") or "",
-            }
-        )
-    return matches
-=======
 def _print_rag_terminal(
     question: str,
     *,
@@ -79,10 +57,9 @@ def _print_rag_terminal(
         else:
             for i, m in enumerate(ranked, 1):
                 q = (m.get("question") or "").strip() or "(empty)"
-                print(f'{i}. "{q}" (score: {m["score"]:.2f})')
+                sql_str = (m.get("sql") or "").strip()
+                print(f'{i}. "{q}" (score: {m["score"]:.2f}) -> {sql_str[:50]}...')
     print("-----------------------------------")
->>>>>>> Stashed changes
-
 
 def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[str, Any]]:
     """
@@ -105,10 +82,6 @@ def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[s
             )
             return []
 
-<<<<<<< Updated upstream
-        index = get_pinecone_index()
-        if index is None:
-=======
         client = get_opensearch_client()
         if client is None:
             _print_rag_terminal(
@@ -116,18 +89,25 @@ def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[s
                 k=k,
                 skip_reason="(skipped — OpenSearch unavailable; check OPENSEARCH_URL and that Docker is running)",
             )
->>>>>>> Stashed changes
             return []
 
-        results = index.query(
-            vector=embedding,
-            top_k=fetch_n,
-            include_metadata=True,
+        query_body = {
+            "size": fetch_n,
+            "query": {
+                "knn": {
+                    "embedding": {
+                        "vector": embedding,
+                        "k": fetch_n
+                    }
+                }
+            }
+        }
+
+        response = client.search(
+            index=config.OPENSEARCH_INDEX_NAME,
+            body=query_body
         )
 
-<<<<<<< Updated upstream
-        matches = _matches_from_results(results)
-=======
         hits = response.get("hits", {}).get("hits", [])
         
         matches = []
@@ -142,7 +122,6 @@ def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[s
 
         _print_rag_terminal(question, k=k, matches=matches)
 
->>>>>>> Stashed changes
         filtered = [
             m for m in matches
             if (m.get("sql") or "").strip() and m["score"] >= SIMILARITY_THRESHOLD
@@ -150,10 +129,10 @@ def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[s
         filtered.sort(key=lambda x: x["score"], reverse=True)
         return filtered[:k]
 
-    except Exception:
+    except Exception as e:
         _print_rag_terminal(
             question,
             k=k,
-            skip_reason="(retrieval failed — see server logs / OpenSearch connectivity)",
+            skip_reason=f"(retrieval failed — error: {e})",
         )
         return []

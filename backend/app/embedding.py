@@ -81,11 +81,7 @@ def get_embedding(text: str) -> Optional[List[float]]:
             _openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
 
         normalized = normalize_query_for_embedding(text)
-<<<<<<< HEAD
-        response = client.embeddings.create(
-=======
         response = _openai_client.embeddings.create(
->>>>>>> d0e73225c47331ff13ba77497a0a27e8b906496a
             input=[normalized],
             model=EMBEDDING_MODEL,
         )
