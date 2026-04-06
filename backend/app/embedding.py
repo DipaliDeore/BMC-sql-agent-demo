@@ -28,6 +28,8 @@ def _get_openai_client():
         _openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
     return _openai_client
 
+_openai_client = None
+
 _MONTH_PATTERN = re.compile(
     r"\b(january|february|march|april|may|june|july|august|september|october|november|december|"
     r"jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b",
@@ -74,8 +76,16 @@ def get_embedding(text: str) -> Optional[List[float]]:
         if client is None:
             return None
 
+        global _openai_client
+        if _openai_client is None:
+            _openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
+
         normalized = normalize_query_for_embedding(text)
+<<<<<<< HEAD
         response = client.embeddings.create(
+=======
+        response = _openai_client.embeddings.create(
+>>>>>>> d0e73225c47331ff13ba77497a0a27e8b906496a
             input=[normalized],
             model=EMBEDDING_MODEL,
         )

@@ -17,8 +17,10 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from langsmith import traceable
 
 from app import config
+from app.fast_sql_pipeline import run_fast_sql_pipeline
 from app.database import execute_query, get_database_schema
 from app.query_analyzer import analyze_query
 from app.sql_generator import generate_sql_and_explanation, is_dangerous_input
@@ -97,6 +99,21 @@ class QueryResponse(BaseModel):
     sub_responses: list[dict] = Field(default_factory=list)
 
 
+def _run_sql_agent(
+    question: str,
+    schema: str,
+    references: list | None,
+    *,
+    thread_id: str | None = None,
+) -> dict:
+    """One-shot pipeline by default; LangGraph agent when USE_FAST_SQL_PIPELINE is false."""
+    if config.USE_FAST_SQL_PIPELINE:
+        return run_fast_sql_pipeline(
+            question, schema, references, thread_id=thread_id
+        )
+    return generate_and_execute_with_tools(question, schema, references)
+
+
 def _is_safe_reference(ex: dict) -> bool:
     """
     Return True if a Pinecone reference row has SQL that passes the same
@@ -159,7 +176,77 @@ def _build_result_summary(results: list[dict]) -> str | None:
     return " · ".join(parts)
 
 
-def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query_id: str, schema: str, loop: asyncio.AbstractEventLoop = None) -> dict:
+# Plain-language phrases for common aggregate column names (demo schema)
+_RESULT_COLUMN_PHRASES: dict[str, str] = {
+    "total_overall": "total sales overall",
+    "total_january": "total sales in January",
+    "total_february": "total sales in February",
+    "total_march": "total sales in March",
+    "total_amount": "total amount",
+    "order_count": "number of orders",
+    "customer_count": "number of customers",
+}
+
+
+def _metric_phrase_for_column(key: str) -> str:
+    """Turn a result column name into a short phrase for sentences (lowercase)."""
+    raw = (key or "").strip()
+    kl = raw.lower()
+    if kl in _RESULT_COLUMN_PHRASES:
+        return _RESULT_COLUMN_PHRASES[kl]
+    # Strip common SQL aggregate wrappers from labels
+    label = raw
+    for prefix in ("SUM(", "AVG(", "COUNT(", "MIN(", "MAX("):
+        if label.upper().startswith(prefix):
+            label = label[len(prefix) :]
+            break
+    label = label.replace(")", "").replace("(", " ").strip() or raw
+    return label.replace("_", " ").strip().lower()
+
+
+def _build_results_narrative(results: list[dict]) -> str | None:
+    """
+    Human-readable summary grounded in actual cell values (for chat + LangSmith clarity).
+    Single row with multiple metrics -> simple sentences; many rows -> short intro pointing to table.
+    """
+    if not results:
+        return None
+    if len(results) > 1:
+        return f"I found {len(results)} rows — the table below has the details."
+
+    row = results[0]
+    if not row:
+        return None
+    if len(row) < 2:
+        return None
+
+    sentences: list[str] = []
+    for key, val in row.items():
+        phrase = _metric_phrase_for_column(key)
+        formatted = _format_single_value(val)
+        sentences.append(f"The {phrase} is {formatted}.")
+
+    body = " ".join(sentences)
+    return f"Here's what the data shows:\n\n{body}"
+
+
+def _merge_explanation_with_narrative(llm_explanation: str, narrative: str | None) -> str:
+    """Put numeric facts first; keep the model's friendly context after."""
+    llm = (llm_explanation or "").strip()
+    if not narrative:
+        return llm
+    generic_llm = llm.lower() in (
+        "",
+        "query executed successfully.",
+        "here's what i pulled.",
+        "got it!",
+    )
+    if generic_llm or not llm:
+        return narrative
+    return f"{narrative}\n\n{llm}"
+
+
+def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query_id: str, schema: str) -> dict:
     print(f"[Multi-Query] [{query_id}] Processing sub-query {i + 1}/{total_queries}: {sub_question}")
 
     if is_dangerous_input(sub_question):
@@ -173,11 +260,11 @@ def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query
         similar = find_similar_queries(sub_question, top_k=REFERENCE_TOP_K)
         filtered = [ex for ex in similar if _is_safe_reference(ex)]
 
-        # Tool calling for sub-query
-        tool_result = generate_and_execute_with_tools(
-            question=sub_question,
-            schema=schema,
-            references=filtered or None,
+        tool_result = _run_sql_agent(
+            sub_question,
+            schema,
+            filtered or None,
+            thread_id=f"{query_id}-sub-{i}",
         )
 
         if tool_result["status"] == "not_related":
@@ -222,6 +309,9 @@ def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query
                 store_query(sub_question, sub_safe_sql)
 
         sub_sentence = _build_result_sentence(sub_result, None)
+
+        sub_narrative = _build_results_narrative(sub_result)
+        sub_explanation = _merge_explanation_with_narrative(sub_explanation, sub_narrative)
 
         print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} SUCCESS — {sub_row_count} rows returned")
         return {
@@ -282,53 +372,13 @@ async def get_schema():
 
 # ── Endpoint 3: Handle Natural Language Query ─────────────────────────────────
 
-@router.post("/query", response_model=QueryResponse)
-async def handle_query(body: QueryRequest):
+
+@traceable(name="sql_demo_query", run_type="chain")
+async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryResponse:
     """
-    Accept a natural language question and return SQL + results + explanation.
-
-    URL: POST /api/query
-
-    Flow:
-        1. Receive user question
-        2. Get the DB schema (so the AI knows the table structure)
-        3. Call Gemini to generate SQL + explanation
-        4. Validate the SQL for safety (SELECT-only)
-        5. Execute the SQL against the database
-        6. Return question, sql, results, explanation, and row_count
-
-    Edge Cases:
-        - If Gemini returns empty SQL → return safely with empty results
-        - If query returns no rows → explanation = "No records found for your query."
+    Full NL → SQL pipeline. Wrapped in @traceable so LangSmith nests the query-analyzer
+    RunnableSequence and the sql_react_agent / generator graph under one parent trace.
     """
-    conversation_id = (body.conversation_id or "").strip() or str(uuid.uuid4())
-
-    # Empty question
-    if not body.question.strip():
-        return QueryResponse(
-            question=body.question,
-            sql="",
-            results=[],
-            explanation="Hmm, I didn't quite catch that — could you ask that again with a bit more detail?",
-            row_count=0,
-            conversation_id=conversation_id,
-        )
-
-    # ── Greeting fast-path — zero LLM calls, instant response ───────────────────
-    if _is_pure_greeting(body.question):
-        return QueryResponse(
-            question=body.question,
-            sql="",
-            results=[],
-            explanation=(
-                "Hi! I'm doing great, thanks for asking. 😊 "
-                "I can help you explore your app's data — like customers, products, "
-                "orders, or line items. What would you like to look into?"
-            ),
-            row_count=0,
-            conversation_id=conversation_id,
-        )
-
     # ── Schema + multi-query analysis (must run before branching) ───────────────
     schema = get_database_schema()
 
@@ -338,23 +388,13 @@ async def handle_query(body: QueryRequest):
 
     pref = (body.preference or "AUTO").upper()
 
-    # ── Parallel I/O: query analysis + Pinecone semantic search ────────────────
-    loop = asyncio.get_running_loop()
-
     if pref == "SINGLE":
         # Decision already made — skip LLM analysis entirely.
         analysis = {"type": "SINGLE", "queries": [body.question]}
-        similar_examples_raw = await loop.run_in_executor(
-            None, find_similar_queries, body.question, REFERENCE_TOP_K
-        )
-    elif pref != "MULTI" and _is_clearly_single(body.question):
-        # AUTO pref + no multi-query indicators — safe to skip analyze_query LLM call.
-        # This saves ~15-20s for the vast majority of normal questions.
-        print("[Routes] Heuristic: clearly single question — skipping analyze_query LLM call")
+    elif pref == "MULTI":
+        analysis = analyze_query(body.question, schema, pref)
+    elif config.SKIP_MULTI_QUERY_LLM:
         analysis = {"type": "SINGLE", "queries": [body.question]}
-        similar_examples_raw = await loop.run_in_executor(
-            None, find_similar_queries, body.question, REFERENCE_TOP_K
-        )
     else:
         # AUTO with multi-indicators OR explicit MULTI pref — run LLM analysis.
         analysis, similar_examples_raw = await asyncio.gather(
@@ -394,6 +434,7 @@ async def handle_query(body: QueryRequest):
             question=body.question,
             schema=schema,
             references=filtered_examples or None,
+            thread_id=conversation_id,
         )
 
         if tool_result["status"] == "db_error":
@@ -426,10 +467,20 @@ async def handle_query(body: QueryRequest):
                 conversation_id=conversation_id,
             )
 
+        if tool_result["status"] == "rate_limited":
+            return QueryResponse(
+                question=body.question,
+                sql="",
+                results=[],
+                row_count=0,
+                explanation=tool_result["explanation"],
+                conversation_id=conversation_id,
+            )
+
         result = tool_result["results"]
         safe_sql = tool_result["sql_query"]
         explanation = tool_result["explanation"]
-        answer_template = None
+        answer_template = tool_result.get("answer_template")
 
         if not result:
             return QueryResponse(
@@ -445,6 +496,9 @@ async def handle_query(body: QueryRequest):
         # store_query does OpenAI embedding + Pinecone upsert (~5-8s) — not worth waiting for.
         loop.run_in_executor(None, store_query, body.question, safe_sql)
         row_count = len(result)
+
+        narrative = _build_results_narrative(result)
+        explanation = _merge_explanation_with_narrative(explanation, narrative)
 
         return QueryResponse(
             question=body.question,
@@ -498,3 +552,38 @@ async def handle_query(body: QueryRequest):
         row_count=0,
         conversation_id=conversation_id,
     )
+
+
+@router.post("/query", response_model=QueryResponse)
+async def handle_query(body: QueryRequest):
+    """
+    Accept a natural language question and return SQL + results + explanation.
+
+    URL: POST /api/query
+
+    Flow:
+        1. Receive user question
+        2. Get the DB schema (so the AI knows the table structure)
+        3. Call Gemini to generate SQL + explanation
+        4. Validate the SQL for safety (SELECT-only)
+        5. Execute the SQL against the database
+        6. Return question, sql, results, explanation, and row_count
+
+    Edge Cases:
+        - If Gemini returns empty SQL → return safely with empty results
+        - If query returns no rows → explanation = "No records found for your query."
+    """
+    conversation_id = (body.conversation_id or "").strip() or str(uuid.uuid4())
+
+    # Empty question — respond in chat style (still a normal JSON body for clients)
+    if not body.question.strip():
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            explanation="Hmm, I didn't quite catch that — could you ask that again with a bit more detail?",
+            row_count=0,
+            conversation_id=conversation_id,
+        )
+
+    return await _execute_nl_query(body, conversation_id)
