@@ -44,6 +44,7 @@ def _similarity_score_to_unit_interval(raw: float) -> float:
     return max(0.0, min(1.0, x))
 
 
+<<<<<<< Updated upstream
 def _matches_from_results(results: Any) -> list[dict[str, Any]]:
     """Convert Pinecone query results to normalized match dicts."""
     matches: list[dict[str, Any]] = []
@@ -63,6 +64,31 @@ def _matches_from_results(results: Any) -> list[dict[str, Any]]:
             }
         )
     return matches
+=======
+def _print_rag_terminal(
+    question: str,
+    *,
+    k: int,
+    matches: list[dict[str, Any]] | None = None,
+    skip_reason: str | None = None,
+) -> None:
+    """Print user query and top-k OpenSearch neighbors (or skip/error reason) for RAG visibility."""
+    print("-----------------------------------")
+    print(f'User Query: "{question}"')
+    print("\nRetrieved Queries:")
+    if skip_reason:
+        print(skip_reason)
+    else:
+        assert matches is not None
+        ranked = sorted(matches, key=lambda x: x["score"], reverse=True)[:k]
+        if not ranked:
+            print("(no hits from OpenSearch)")
+        else:
+            for i, m in enumerate(ranked, 1):
+                q = (m.get("question") or "").strip() or "(empty)"
+                print(f'{i}. "{q}" (score: {m["score"]:.2f})')
+    print("-----------------------------------")
+>>>>>>> Stashed changes
 
 
 def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[str, Any]]:
@@ -89,10 +115,25 @@ def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[s
     try:
         embedding = get_embedding(question)
         if not embedding:
+            _print_rag_terminal(
+                question,
+                k=k,
+                skip_reason="(skipped — no embedding; configure OPENAI_API_KEY)",
+            )
             return []
 
+<<<<<<< Updated upstream
         index = get_pinecone_index()
         if index is None:
+=======
+        client = get_opensearch_client()
+        if client is None:
+            _print_rag_terminal(
+                question,
+                k=k,
+                skip_reason="(skipped — OpenSearch unavailable; check OPENSEARCH_URL and that Docker is running)",
+            )
+>>>>>>> Stashed changes
             return []
 
         results = index.query(
@@ -101,7 +142,24 @@ def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[s
             include_metadata=True,
         )
 
+<<<<<<< Updated upstream
         matches = _matches_from_results(results)
+=======
+        hits = response.get("hits", {}).get("hits", [])
+        
+        matches = []
+        for hit in hits:
+            score = hit.get("_score", 0.0)
+            source = hit.get("_source", {})
+            matches.append({
+                "score": _similarity_score_to_unit_interval(score),
+                "question": source.get("question", ""),
+                "sql": source.get("sql", "")
+            })
+
+        _print_rag_terminal(question, k=k, matches=matches)
+
+>>>>>>> Stashed changes
         filtered = [
             m
             for m in matches
@@ -110,4 +168,9 @@ def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[s
         filtered.sort(key=lambda x: x["score"], reverse=True)
         return filtered[:k]
     except Exception:
+        _print_rag_terminal(
+            question,
+            k=k,
+            skip_reason="(retrieval failed — see server logs / OpenSearch connectivity)",
+        )
         return []

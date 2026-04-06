@@ -385,10 +385,18 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             except QueryValidationError:
                 continue
 
+<<<<<<< Updated upstream
         tool_result = _run_sql_agent(
             body.question,
             schema,
             filtered_examples or None,
+=======
+        # Tool calling — LLM generates SQL and executes via tool in one loop
+        tool_result = generate_and_execute_with_tools(
+            question=body.question,
+            schema=schema,
+            references=filtered_examples or None,
+>>>>>>> Stashed changes
             thread_id=conversation_id,
         )
 
@@ -419,6 +427,16 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 results=[],
                 row_count=0,
                 explanation="Sorry, could not generate a valid query. Please rephrasing.",
+                conversation_id=conversation_id,
+            )
+
+        if tool_result["status"] == "rate_limited":
+            return QueryResponse(
+                question=body.question,
+                sql="",
+                results=[],
+                row_count=0,
+                explanation=tool_result["explanation"],
                 conversation_id=conversation_id,
             )
 
