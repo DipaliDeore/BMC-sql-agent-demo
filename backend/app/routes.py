@@ -16,7 +16,7 @@ import re
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from langsmith import traceable
 
 from app import config
@@ -29,6 +29,7 @@ from app.search import REFERENCE_TOP_K, find_similar_queries
 from app.sql_retry_engine import execute_with_retry
 from app.agent_executor import generate_and_execute_with_tools
 from app.store import store_query
+from app import chat_store
 
 
 # ── Create API Router ─────────────────────────────────────────────────────────
@@ -72,12 +73,36 @@ def _is_clearly_single(question: str) -> bool:
 
 # ── Request / Response Models ─────────────────────────────────────────────────
 
+class ChatMessageItem(BaseModel):
+    """One turn for client-synced conversation history (optional)."""
+
+    role: str
+    content: str
+
+    @field_validator("role")
+    @classmethod
+    def _role_ok(cls, v: str) -> str:
+        if v not in ("user", "assistant"):
+            raise ValueError('role must be "user" or "assistant"')
+        return v
+
+
 class QueryRequest(BaseModel):
     """Request body for the POST /api/query endpoint."""
     question: str  # The user's natural language question
-    # Stable id per browser session so LangGraph MemorySaver can recall prior turns
+    # Stable id per chat; LangGraph thread + Postgres checkpoints recall prior turns
     conversation_id: str | None = None
     preference: str | None = "AUTO"  # "AUTO", "SINGLE", "MULTI"
+    # Optional: full transcript from the client (stored server-side is authoritative)
+    messages: list[ChatMessageItem] | None = None
+
+
+class CreateChatBody(BaseModel):
+    title: str | None = None
+
+
+class RenameChatBody(BaseModel):
+    title: str
 
 
 class QueryResponse(BaseModel):
@@ -99,6 +124,28 @@ class QueryResponse(BaseModel):
     sub_responses: list[dict] = Field(default_factory=list)
 
 
+def _assistant_chat_content(resp: QueryResponse) -> str:
+    ex = (resp.explanation or "").strip()
+    if ex:
+        return ex
+    return "Done."
+
+
+def _assistant_payload_from_response(resp: QueryResponse) -> dict:
+    return {
+        "sql": resp.sql,
+        "results": resp.results,
+        "explanation": resp.explanation,
+        "row_count": resp.row_count,
+        "result_sentence": resp.result_sentence,
+        "result_summary": resp.result_summary,
+        "cache_references": resp.cache_references,
+        "is_multi": resp.is_multi,
+        "sub_responses": resp.sub_responses,
+        "is_ambiguous": resp.is_ambiguous,
+    }
+
+
 def _run_sql_agent(
     question: str,
     schema: str,
@@ -111,7 +158,9 @@ def _run_sql_agent(
         return run_fast_sql_pipeline(
             question, schema, references, thread_id=thread_id
         )
-    return generate_and_execute_with_tools(question, schema, references)
+    return generate_and_execute_with_tools(
+        question, schema, references, thread_id=thread_id
+    )
 
 
 def _is_safe_reference(ex: dict) -> bool:
@@ -246,7 +295,14 @@ def _merge_explanation_with_narrative(llm_explanation: str, narrative: str | Non
     return f"{narrative}\n\n{llm}"
 
 
-def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query_id: str, schema: str) -> dict:
+def _process_sub_query_sync(
+    sub_question: str,
+    i: int,
+    total_queries: int,
+    query_id: str,
+    schema: str,
+    loop=None,
+) -> dict:
     print(f"[Multi-Query] [{query_id}] Processing sub-query {i + 1}/{total_queries}: {sub_question}")
 
     if is_dangerous_input(sub_question):
@@ -590,4 +646,66 @@ async def handle_query(body: QueryRequest):
             conversation_id=conversation_id,
         )
 
-    return await _execute_nl_query(body, conversation_id)
+    # Client may send `messages` for sync; execution uses server store + LangGraph checkpoints.
+    _ = body.messages
+
+    chat_store.ensure_chat(conversation_id)
+    chat_store.maybe_set_title_from_first_question(
+        conversation_id, body.question.strip()
+    )
+    chat_store.add_message(conversation_id, "user", body.question.strip(), None)
+
+    try:
+        response = await _execute_nl_query(body, conversation_id)
+    except Exception as e:
+        err_text = (str(e) or "").strip() or "Something went wrong. Please try again."
+        chat_store.add_message(
+            conversation_id,
+            "assistant",
+            err_text,
+            {"error": True, "errorText": err_text},
+        )
+        raise
+
+    chat_store.add_message(
+        conversation_id,
+        "assistant",
+        _assistant_chat_content(response),
+        _assistant_payload_from_response(response),
+    )
+    return response
+
+
+@router.get("/chats")
+async def api_list_chats():
+    return {"chats": chat_store.list_chats()}
+
+
+@router.post("/chats")
+async def api_create_chat(body: CreateChatBody | None = None):
+    b = body if body is not None else CreateChatBody()
+    return chat_store.create_chat(b.title)
+
+
+@router.get("/chats/{chat_id}/messages")
+async def api_get_chat_messages(chat_id: str):
+    if chat_store.get_chat(chat_id) is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return {"messages": chat_store.list_messages(chat_id)}
+
+
+@router.patch("/chats/{chat_id}")
+async def api_rename_chat(chat_id: str, body: RenameChatBody):
+    if not chat_store.rename_chat(chat_id, body.title):
+        raise HTTPException(status_code=404, detail="Chat not found")
+    row = chat_store.get_chat(chat_id)
+    assert row is not None
+    return row
+
+
+@router.delete("/chats/{chat_id}")
+async def api_delete_chat(chat_id: str):
+    if chat_store.get_chat(chat_id) is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    chat_store.delete_chat(chat_id)
+    return {"ok": True}

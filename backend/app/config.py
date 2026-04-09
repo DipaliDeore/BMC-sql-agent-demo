@@ -16,6 +16,15 @@ load_dotenv()
 # ── Google Gemini ──────────────────────────────────────────────────────────────
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
+# ── PostgreSQL (LangGraph checkpoints + chat UI persistence) ───────────────────
+# Example: postgresql://user:pass@localhost:5432/mydb
+# If unset, the app uses in-memory checkpoints and in-memory chat storage.
+#
+# PostgreSQL 15+: non-superusers need CREATE on schema public (or use DB owner / postgres).
+# Superuser (psql/pgAdmin): GRANT USAGE, CREATE ON SCHEMA public TO your_app_user;
+# See backend/scripts/postgres_app_grants.sql
+POSTGRES_URI: str = os.getenv("POSTGRES_URI", "").strip()
+
 # ── TiDB Cloud / MySQL Database ────────────────────────────────────────────────
 DB_HOST: str     = os.getenv("DB_HOST", "localhost")
 DB_PORT: int     = int(os.getenv("DB_PORT", "4000"))

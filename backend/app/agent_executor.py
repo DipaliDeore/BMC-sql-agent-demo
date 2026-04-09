@@ -7,11 +7,11 @@ from decimal import Decimal
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
 
 from app.tools.sql_tools import run_sql_query
 from app import config
+from app.checkpointer import get_checkpointer
 from app.serialization import make_json_serializable
 
 
@@ -19,11 +19,10 @@ AVAILABLE_TOOLS = [run_sql_query]
 
 
 # ---------------------------------------------------------------------------
-# MODULE-LEVEL LLM + COMPILED AGENT (checkpointer lives for process lifetime)
+# MODULE-LEVEL LLM + COMPILED AGENT (shared Postgres or in-memory checkpointer)
 # ---------------------------------------------------------------------------
 _llm: ChatGoogleGenerativeAI | None = None
 _agent_app = None
-_checkpointer = InMemorySaver()
 
 
 def _get_llm() -> ChatGoogleGenerativeAI:
@@ -80,7 +79,7 @@ def _get_agent_app():
             _get_llm(),
             tools=AVAILABLE_TOOLS,
             prompt=RunnableLambda(_prepend_system),
-            checkpointer=_checkpointer,
+            checkpointer=get_checkpointer(),
             version="v2",
         )
     return _agent_app

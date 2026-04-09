@@ -1,17 +1,37 @@
 /**
- * Sidebar.jsx - Left Panel Component
+ * Sidebar.jsx — New chat + recent chats (ChatGPT-style)
  */
 
 import React from "react";
 
-export default function Sidebar({ theme, toggleTheme, history, onSelect }) {
-  const isDark = theme === "dark";
+function formatChatTime(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
 
+export default function Sidebar({
+  chats,
+  activeChatId,
+  onNewChat,
+  onSelectChat,
+  onRenameChat,
+  onDeleteChat,
+}) {
   return (
     <aside
       className="app-sidebar"
       style={{
-        width: "clamp(220px, 26%, 300px)",
+        width: "clamp(240px, 28%, 300px)",
         flexShrink: 0,
         backgroundColor: "var(--surface-1)",
         borderRight: "1px solid var(--border)",
@@ -25,62 +45,54 @@ export default function Sidebar({ theme, toggleTheme, history, onSelect }) {
     >
       <div
         style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: "12px",
-          padding: "18px 20px",
+          padding: "16px 14px 12px",
           borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        <div style={{ minWidth: 0 }}>
-          <div
-            style={{
-              height: "3px",
-              width: "40px",
-              borderRadius: "2px",
-              background: "var(--header-accent)",
-              marginBottom: "10px",
-            }}
-          />
-          <h1
-            style={{
-              fontSize: "17px",
-              fontWeight: 700,
-              letterSpacing: "-0.02em",
-              margin: 0,
-              lineHeight: 1.2,
-            }}
-          >
-            SQL Agent
-          </h1>
-        </div>
-        <button
-          id="theme-toggle-btn"
-          type="button"
-          onClick={toggleTheme}
-          aria-pressed={isDark}
-          aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
+        <div
           style={{
-            flexShrink: 0,
-            padding: "8px 14px",
-            fontSize: "12px",
+            height: "3px",
+            width: "36px",
+            borderRadius: "2px",
+            background: "var(--header-accent)",
+            marginBottom: "10px",
+          }}
+        />
+        <h1
+          style={{
+            fontSize: "16px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            margin: "0 0 14px",
+            lineHeight: 1.2,
+          }}
+        >
+          SQL Agent
+        </h1>
+        <button
+          type="button"
+          onClick={onNewChat}
+          style={{
+            width: "100%",
+            padding: "11px 14px",
+            fontSize: "14px",
             fontWeight: 600,
+            borderRadius: "10px",
             border: "1px solid var(--border)",
-            borderRadius: "999px",
             backgroundColor: "var(--surface-2)",
             color: "var(--text)",
             cursor: "pointer",
-            transition: "background-color 0.15s ease, border-color 0.15s ease",
+            fontFamily: "inherit",
+            transition: "background-color 0.15s ease",
           }}
         >
-          {isDark ? "Light" : "Dark"}
+          + New chat
         </button>
       </div>
 
       <div
         style={{
-          padding: "14px 20px 8px",
+          padding: "10px 14px 6px",
           fontSize: "11px",
           fontWeight: 700,
           textTransform: "uppercase",
@@ -88,62 +100,121 @@ export default function Sidebar({ theme, toggleTheme, history, onSelect }) {
           color: "var(--text-muted)",
         }}
       >
-        Query history
+        Recent chats
       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "4px 12px 16px" }}>
-        {history.length === 0 ? (
+      <div style={{ flex: 1, overflowY: "auto", padding: "4px 10px 16px" }}>
+        {chats.length === 0 ? (
           <p
             style={{
-              padding: "24px 12px",
+              padding: "20px 10px",
               fontSize: "13px",
               color: "var(--text-muted)",
               textAlign: "center",
               lineHeight: 1.5,
             }}
           >
-            Your questions will appear here so you can rerun them quickly.
+            No chats yet. Start with <strong>New chat</strong>.
           </p>
         ) : (
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-            {history.map((item, index) => (
-              <li key={`${item}-${index}`}>
-                <button
-                  id={`history-item-${index}`}
-                  type="button"
-                  title={item}
-                  onClick={() => onSelect(item)}
-                  style={{
-                    width: "100%",
-                    textAlign: "left",
-                    padding: "11px 14px",
-                    fontSize: "13px",
-                    lineHeight: 1.45,
-                    border: "1px solid transparent",
-                    borderRadius: "10px",
-                    backgroundColor: "transparent",
-                    color: "var(--text)",
-                    cursor: "pointer",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    display: "block",
-                    marginBottom: "4px",
-                    transition: "background-color 0.12s ease, border-color 0.12s ease",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = "var(--surface-2)";
-                    e.currentTarget.style.borderColor = "var(--border-subtle)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = "transparent";
-                    e.currentTarget.style.borderColor = "transparent";
-                  }}
-                >
-                  {item}
-                </button>
-              </li>
-            ))}
+            {chats.map((c) => {
+              const active = c.id === activeChatId;
+              return (
+                <li key={c.id} style={{ marginBottom: "6px" }}>
+                  <div
+                    style={{
+                      borderRadius: "10px",
+                      border: active ? "1px solid var(--accent)" : "1px solid transparent",
+                      backgroundColor: active ? "var(--surface-2)" : "transparent",
+                      padding: "8px 10px",
+                      transition: "background-color 0.12s ease, border-color 0.12s ease",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onSelectChat(c.id)}
+                      title={c.title}
+                      style={{
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "4px 0",
+                        fontSize: "13px",
+                        fontWeight: active ? 600 : 500,
+                        lineHeight: 1.4,
+                        border: "none",
+                        background: "transparent",
+                        color: "var(--text)",
+                        cursor: "pointer",
+                        display: "block",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      {c.title || "New chat"}
+                    </button>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: "8px",
+                        marginTop: "4px",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: "11px",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        {formatChatTime(c.updated_at)}
+                      </span>
+                      <span style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRenameChat(c.id, c.title);
+                          }}
+                          style={{
+                            fontSize: "11px",
+                            padding: "2px 6px",
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--text-muted)",
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                          }}
+                        >
+                          Rename
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteChat(c.id);
+                          }}
+                          style={{
+                            fontSize: "11px",
+                            padding: "2px 6px",
+                            border: "none",
+                            background: "transparent",
+                            color: "var(--error)",
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </span>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
