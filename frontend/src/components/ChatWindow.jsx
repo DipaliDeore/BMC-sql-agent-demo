@@ -1,14 +1,24 @@
 /**
- * ChatWindow.jsx - Main Chat Area Component (Right Panel)
+ * ChatWindow.jsx — scrollable messages + fixed input; theme toggle top-right
  */
 
 import React, { useRef, useEffect, useCallback } from "react";
 import MessageBubble from "./MessageBubble";
 import LoadingMessage from "./LoadingMessage";
 
-export default function ChatWindow({ theme, messages, loading, onSend, inputValue, setInputValue }) {
+export default function ChatWindow({
+  theme,
+  toggleTheme,
+  chatTitle,
+  messages,
+  loading,
+  onSend,
+  inputValue,
+  setInputValue,
+}) {
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
+  const isDark = theme === "dark";
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -55,31 +65,61 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
     >
       <header
         style={{
-          padding: "18px 28px",
+          padding: "14px 24px",
           borderBottom: "1px solid var(--border-subtle)",
           backgroundColor: "var(--surface-1)",
           flexShrink: 0,
           boxShadow: "var(--shadow-sm)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "16px",
         }}
       >
         <h2
           style={{
-            fontSize: "17px",
-            fontWeight: 700,
+            fontSize: "16px",
+            fontWeight: 600,
             letterSpacing: "-0.02em",
             color: "var(--text)",
             margin: 0,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={chatTitle || ""}
+        >
+          {chatTitle || "New chat"}
+        </h2>
+        <button
+          type="button"
+          onClick={toggleTheme}
+          aria-pressed={isDark}
+          aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
+          style={{
+            flexShrink: 0,
+            padding: "8px 14px",
+            fontSize: "12px",
+            fontWeight: 600,
+            border: "1px solid var(--border)",
+            borderRadius: "999px",
+            backgroundColor: "var(--surface-2)",
+            color: "var(--text)",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            transition: "background-color 0.15s ease, border-color 0.15s ease",
           }}
         >
-          AI Data Assistant
-        </h2>
+          {isDark ? "Light" : "Dark"}
+        </button>
       </header>
 
       <div
         style={{
           flex: 1,
           overflowY: "auto",
-          padding: "24px 28px",
+          padding: "20px 24px",
           minHeight: 0,
         }}
       >
@@ -90,23 +130,23 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
               flexDirection: "column",
               alignItems: "center",
               justifyContent: "center",
-              minHeight: "min(320px, 50vh)",
+              minHeight: "min(280px, 45vh)",
               textAlign: "center",
               padding: "24px 16px",
             }}
           >
             <div
               style={{
-                width: "56px",
-                height: "56px",
-                borderRadius: "16px",
+                width: "52px",
+                height: "52px",
+                borderRadius: "14px",
                 background: "var(--surface-2)",
                 border: "1px solid var(--border)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                marginBottom: "20px",
-                fontSize: "26px",
+                marginBottom: "16px",
+                fontSize: "24px",
               }}
               aria-hidden
             >
@@ -115,13 +155,13 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
             <p
               style={{
                 color: "var(--text)",
-                fontSize: "16px",
+                fontSize: "15px",
                 fontWeight: 600,
                 marginBottom: "8px",
                 maxWidth: "360px",
               }}
             >
-              Explore your data with questions
+              Ask anything about your data
             </p>
             <p
               style={{
@@ -132,7 +172,7 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
                 marginBottom: 0,
               }}
             >
-              Describe what you want to know. The assistant generates SQL, runs it, and summarizes results.
+              Natural language questions, SQL behind the scenes, results and explanations here.
             </p>
           </div>
         )}
@@ -140,7 +180,7 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
         <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
           {messages.map((msg, index) => (
             <MessageBubble
-              key={msg.role === "user" ? `u-${index}-${msg.content}` : `a-${index}`}
+              key={msg.id != null ? String(msg.id) : `m-${index}`}
               message={msg}
               theme={theme}
               onSend={onSend}
@@ -155,7 +195,7 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
 
       <div
         style={{
-          padding: "16px 28px 20px",
+          padding: "14px 24px 18px",
           borderTop: "1px solid var(--border-subtle)",
           backgroundColor: "var(--surface-1)",
           flexShrink: 0,
@@ -178,9 +218,9 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask a question about your data…"
+            placeholder="Message…"
             disabled={loading}
-            aria-label="Question for the data assistant"
+            aria-label="Message for the data assistant"
             style={{
               flex: 1,
               minHeight: "48px",
@@ -204,7 +244,7 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
             disabled={loading || !inputValue.trim()}
             style={{
               flexShrink: 0,
-              padding: "13px 22px",
+              padding: "13px 20px",
               minHeight: "48px",
               fontSize: "14px",
               fontWeight: 600,
@@ -212,7 +252,8 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
               border: "none",
               backgroundColor:
                 loading || !inputValue.trim() ? "var(--surface-3)" : "var(--accent)",
-              color: loading || !inputValue.trim() ? "var(--text-muted)" : "var(--accent-fg)",
+              color:
+                loading || !inputValue.trim() ? "var(--text-muted)" : "var(--accent-fg)",
               cursor: loading || !inputValue.trim() ? "not-allowed" : "pointer",
               fontFamily: "inherit",
               boxShadow:
@@ -231,7 +272,7 @@ export default function ChatWindow({ theme, messages, loading, onSend, inputValu
               e.currentTarget.style.transform = "";
             }}
           >
-            Run
+            Send
           </button>
         </form>
         <p
