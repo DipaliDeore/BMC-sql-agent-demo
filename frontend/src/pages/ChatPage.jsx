@@ -23,6 +23,7 @@ function fromApiMessage(row) {
   const p = row.payload || {};
   return {
     id: `db-${row.id}`,
+    serverMessageId: row.id,
     role: "assistant",
     content: row.content,
     explanation: p.explanation ?? row.content,
@@ -36,6 +37,9 @@ function fromApiMessage(row) {
     is_ambiguous: p.is_ambiguous ?? false,
     error: p.error ?? false,
     errorText: p.errorText,
+    cache_doc_id: p.cache_doc_id ?? null,
+    feedback: p.feedback ?? null,
+    feedbacks: p.feedbacks ?? null,
   };
 }
 
@@ -158,6 +162,8 @@ export default function ChatPage({ theme, toggleTheme }) {
 
       const assistantMessage = {
         id: `local-a-${Date.now()}`,
+        serverMessageId:
+          data.assistant_message_id != null ? Number(data.assistant_message_id) : null,
         role: "assistant",
         sql: data.sql,
         results: data.results,
@@ -169,6 +175,9 @@ export default function ChatPage({ theme, toggleTheme }) {
         sub_responses: data.sub_responses ?? [],
         is_ambiguous: data.is_ambiguous ?? false,
         original_question: question,
+        cache_doc_id: data.cache_doc_id ?? null,
+        feedback: null,
+        feedbacks: null,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -254,6 +263,7 @@ export default function ChatPage({ theme, toggleTheme }) {
         theme={theme}
         toggleTheme={toggleTheme}
         chatTitle={activeTitle}
+        conversationId={activeChatId}
         messages={messages}
         loading={loading}
         onSend={handleSend}

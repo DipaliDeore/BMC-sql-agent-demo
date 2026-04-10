@@ -10,6 +10,7 @@ export default function ChatWindow({
   theme,
   toggleTheme,
   chatTitle,
+  conversationId,
   messages,
   loading,
   onSend,
@@ -183,6 +184,7 @@ export default function ChatWindow({
               key={msg.id != null ? String(msg.id) : `m-${index}`}
               message={msg}
               theme={theme}
+              conversationId={conversationId}
               onSend={onSend}
             />
           ))}

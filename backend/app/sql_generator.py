@@ -227,7 +227,7 @@ def generate_sql_and_explanation(
     Args:
         question: Current user message.
         schema: Database schema text.
-        references: Optional Pinecone-style similar (question, sql) examples.
+        references: Optional similar past (question, sql) examples from semantic cache.
         thread_id: LangGraph checkpoint thread (conversation id). If None, a
             one-off id is used so this call does not share memory with others.
     """

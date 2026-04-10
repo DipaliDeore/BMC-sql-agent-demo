@@ -12,8 +12,10 @@ Endpoints:
 """
 
 import asyncio
+import functools
 import re
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -30,6 +32,7 @@ from app.sql_retry_engine import execute_with_retry
 from app.agent_executor import generate_and_execute_with_tools
 from app.store import store_query
 from app import chat_store
+from app import feedback_ops, feedback_log
 
 
 # ── Create API Router ─────────────────────────────────────────────────────────
@@ -114,7 +117,7 @@ class QueryResponse(BaseModel):
     row_count: int       # Number of rows returned
     result_summary: str | None = None  # Deprecated: use result_sentence for single-value
     result_sentence: str | None = None  # Natural language sentence for single value (e.g. "Total number of customers are 10")
-    # Optional debug info to show what Pinecone retrieval returned.
+    # Optional debug info to show what semantic cache retrieval returned.
     # This does not affect the main logic.
     cache_references: list[dict] | None = None
     conversation_id: str | None = None  # Echo effective thread id — reuse on later requests
@@ -122,6 +125,46 @@ class QueryResponse(BaseModel):
     # Multi-query responses (optional; defaults keep single-query clients unchanged)
     is_multi: bool = False
     sub_responses: list[dict] = Field(default_factory=list)
+    # OpenSearch document id for the (question, SQL) pair stored after success — for feedback.
+    cache_doc_id: str | None = None
+    # DB id of the assistant row saved for this response (client sends back for POST /api/feedback).
+    assistant_message_id: str | None = None
+
+
+def _feedback_already_submitted(payload: dict, sub_index: int | None) -> bool:
+    """True if this message already has feedback for the same scope (whole message or sub_index)."""
+    hist: list = []
+    raw_hist = payload.get("feedbacks")
+    if isinstance(raw_hist, list):
+        hist.extend(raw_hist)
+    legacy = payload.get("feedback")
+    if isinstance(legacy, dict) and legacy.get("vote") in ("up", "down"):
+        hist.append(legacy)
+    for item in hist:
+        if not isinstance(item, dict) or item.get("vote") not in ("up", "down"):
+            continue
+        isub = item.get("sub_index")
+        if isub is None and sub_index is None:
+            return True
+        if isub is not None and sub_index is not None:
+            try:
+                if int(isub) == int(sub_index):
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
+class FeedbackRequest(BaseModel):
+    """Explicit thumbs up/down on an assistant message."""
+
+    conversation_id: str = Field(..., min_length=1)
+    message_id: str = Field(..., min_length=1)
+    vote: Literal["up", "down"]
+    failure_kind: Literal["sql", "interpretation", "other"] | None = None
+    reason: str | None = Field(default=None, max_length=2000)
+    # For is_multi responses: which sub-query block (0-based) the feedback refers to.
+    sub_index: int | None = Field(default=None, ge=0)
 
 
 def _assistant_chat_content(resp: QueryResponse) -> str:
@@ -143,6 +186,7 @@ def _assistant_payload_from_response(resp: QueryResponse) -> dict:
         "is_multi": resp.is_multi,
         "sub_responses": resp.sub_responses,
         "is_ambiguous": resp.is_ambiguous,
+        "cache_doc_id": resp.cache_doc_id,
     }
 
 
@@ -165,7 +209,7 @@ def _run_sql_agent(
 
 def _is_safe_reference(ex: dict) -> bool:
     """
-    Return True if a Pinecone reference row has SQL that passes the same
+    Return True if a cache reference row has SQL that passes the same
     validator used for the main pipeline (SELECT-only, etc.).
     """
     try:
@@ -354,15 +398,19 @@ def _process_sub_query_sync(
         sub_explanation = tool_result["explanation"]
         sub_row_count = len(sub_result)
 
+        sub_cache_doc_id: str | None = None
         if sub_result:
+            sub_cache_doc_id = str(uuid.uuid4())
+            store_fn = functools.partial(
+                store_query, sub_question, sub_safe_sql, sub_cache_doc_id
+            )
             if loop:
                 loop.call_soon_threadsafe(
-                    lambda: loop.run_in_executor(None, store_query, sub_question, sub_safe_sql)
+                    lambda sf=store_fn: loop.run_in_executor(None, sf)
                 )
                 print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} scheduled for background storage")
             else:
-                # Fallback if loop is missing
-                store_query(sub_question, sub_safe_sql)
+                store_fn()
 
         sub_sentence = _build_result_sentence(sub_result, None)
 
@@ -370,11 +418,19 @@ def _process_sub_query_sync(
         sub_explanation = _merge_explanation_with_narrative(sub_explanation, sub_narrative)
 
         print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} SUCCESS — {sub_row_count} rows returned")
-        return {
-            "question": sub_question, "sql": sub_safe_sql, "explanation": sub_explanation,
-            "results": sub_result, "row_count": sub_row_count, "result_sentence": sub_sentence or "",
-            "cache_references": filtered, "status": "success"
+        out_sub = {
+            "question": sub_question,
+            "sql": sub_safe_sql,
+            "explanation": sub_explanation,
+            "results": sub_result,
+            "row_count": sub_row_count,
+            "result_sentence": sub_sentence or "",
+            "cache_references": filtered,
+            "status": "success",
         }
+        if sub_cache_doc_id:
+            out_sub["cache_doc_id"] = sub_cache_doc_id
+        return out_sub
 
     except Exception as e:
         print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} unexpected error: {e}")
@@ -477,7 +533,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 conversation_id=conversation_id,
             )
 
-        # Semantic cache: Pinecone similarity for reference examples in the prompt.
+        # Semantic cache: OpenSearch similarity for reference examples in the prompt.
         # Results already fetched concurrently above — just filter for safety.
         filtered_examples: list[dict] = []
         for ex in similar_examples_raw:
@@ -552,9 +608,12 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 conversation_id=conversation_id,
             )
 
-        # Fire-and-forget: store in Pinecone after response — don't block the user.
-        # store_query does OpenAI embedding + Pinecone upsert (~5-8s) — not worth waiting for.
-        loop.run_in_executor(None, store_query, body.question, safe_sql)
+        # Fire-and-forget: store in OpenSearch after response — doc id is known up front for feedback.
+        cache_doc_id = str(uuid.uuid4())
+        loop.run_in_executor(
+            None,
+            functools.partial(store_query, body.question, safe_sql, cache_doc_id),
+        )
         row_count = len(result)
 
         narrative = _build_results_narrative(result)
@@ -570,6 +629,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             result_summary=_build_result_summary(result),
             cache_references=filtered_examples or None,
             conversation_id=conversation_id,
+            cache_doc_id=cache_doc_id,
         )
 
     # ── MULTI question path — run each sub-question through a slim pipeline ───────
@@ -667,13 +727,116 @@ async def handle_query(body: QueryRequest):
         )
         raise
 
-    chat_store.add_message(
+    row = chat_store.add_message(
         conversation_id,
         "assistant",
         _assistant_chat_content(response),
         _assistant_payload_from_response(response),
     )
-    return response
+    return response.model_copy(update={"assistant_message_id": str(row["id"])})
+
+
+@router.post("/feedback")
+async def post_feedback(body: FeedbackRequest):
+    """
+    Thumbs up/down on an assistant turn. Updates OpenSearch cache doc when cache_doc_id
+    is present on the stored message payload; otherwise logs only (neutral / no vector change).
+    No feedback (client sends nothing) is handled by omission — this endpoint is not called.
+    """
+    try:
+        mid = int(body.message_id.strip())
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="message_id must be a numeric id")
+
+    if chat_store.get_chat(body.conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    msg = chat_store.get_message(body.conversation_id.strip(), mid)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if (msg.get("role") or "") != "assistant":
+        raise HTTPException(status_code=400, detail="Feedback applies only to assistant messages")
+
+    payload = msg.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if _feedback_already_submitted(payload, body.sub_index):
+        return {
+            "ok": True,
+            "duplicate": True,
+            "vector_updated": False,
+            "cache_doc_id": None,
+        }
+
+    cache_doc_id: str | None = None
+    if body.sub_index is not None:
+        subs = payload.get("sub_responses") or []
+        if body.sub_index < len(subs) and isinstance(subs[body.sub_index], dict):
+            cid = (subs[body.sub_index].get("cache_doc_id") or "").strip()
+            cache_doc_id = cid or None
+    else:
+        cid = (payload.get("cache_doc_id") or "").strip()
+        cache_doc_id = cid or None
+
+    vector_updated = False
+    loop = asyncio.get_running_loop()
+    if cache_doc_id:
+        if body.vote == "up":
+            vector_updated = await loop.run_in_executor(
+                None, feedback_ops.apply_positive_feedback, cache_doc_id
+            )
+        else:
+            vector_updated = await loop.run_in_executor(
+                None, feedback_ops.apply_negative_feedback, cache_doc_id
+            )
+
+    reason_trunc = (body.reason or "").strip()[:500] or None
+    feedback_log.log_feedback_event(
+        {
+            "vote": body.vote,
+            "conversation_id": body.conversation_id.strip(),
+            "message_id": mid,
+            "sub_index": body.sub_index,
+            "failure_kind": body.failure_kind,
+            "reason": reason_trunc,
+            "cache_doc_id": cache_doc_id,
+            "vector_updated": vector_updated,
+        }
+    )
+
+    if body.vote == "up" and vector_updated:
+        feedback_log.log_metric_event(
+            "explicit_positive_feedback",
+            {"conversation_id": body.conversation_id.strip(), "message_id": mid},
+        )
+
+    feedbacks: list = []
+    if isinstance(payload.get("feedbacks"), list):
+        feedbacks = [x for x in payload["feedbacks"] if isinstance(x, dict)]
+    elif isinstance(payload.get("feedback"), dict) and payload["feedback"].get("vote") in (
+        "up",
+        "down",
+    ):
+        feedbacks = [payload["feedback"]]
+    entry = {
+        "vote": body.vote,
+        "failure_kind": body.failure_kind,
+        "sub_index": body.sub_index,
+    }
+    feedbacks.append(entry)
+    chat_store.patch_message_payload(
+        body.conversation_id.strip(),
+        mid,
+        {"feedbacks": feedbacks, "feedback": entry},
+    )
+
+    return {
+        "ok": True,
+        "duplicate": False,
+        "vector_updated": vector_updated,
+        "cache_doc_id": cache_doc_id,
+    }
 
 
 @router.get("/chats")
