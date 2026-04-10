@@ -39,7 +39,7 @@ DB_CA_CERT: str  = os.getenv("DB_CA_CERT", "")
 OPENSEARCH_URL: str = os.getenv("OPENSEARCH_URL", "http://localhost:9200")
 OPENSEARCH_INDEX_NAME: str = os.getenv("OPENSEARCH_INDEX_NAME", "sql-agent-cache")
 
-# ── OpenAI (embeddings for Pinecone; text-embedding-3-small) ───────────────────
+# ── OpenAI (embeddings for OpenSearch k-NN cache; text-embedding-3-small) ───────
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 
 # ── SQL retry configuration ──────────────────────────────────────────────────────

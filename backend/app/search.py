@@ -51,14 +51,15 @@ def _print_rag_terminal(
         print(skip_reason)
     else:
         assert matches is not None
-        ranked = sorted(matches, key=lambda x: x["score"], reverse=True)[:k]
+        ranked = sorted(matches, key=lambda x: x.get("rank_score", x["score"]), reverse=True)[:k]
         if not ranked:
             print("(no hits from OpenSearch)")
         else:
             for i, m in enumerate(ranked, 1):
                 q = (m.get("question") or "").strip() or "(empty)"
                 sql_str = (m.get("sql") or "").strip()
-                print(f'{i}. "{q}" (score: {m["score"]:.2f}) -> {sql_str[:50]}...')
+                rs = m.get("rank_score", m["score"])
+                print(f'{i}. "{q}" (sim: {m["score"]:.2f}, rank: {rs:.2f}) -> {sql_str[:50]}...')
     print("-----------------------------------")
 
 def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[str, Any]]:
@@ -109,25 +110,46 @@ def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[s
         )
 
         hits = response.get("hits", {}).get("hits", [])
-        
-        matches = []
+
+        matches: list[dict[str, Any]] = []
         for hit in hits:
-            score = hit.get("_score", 0.0)
-            source = hit.get("_source", {})
+            raw_score = hit.get("_score", 0.0)
+            base = _similarity_score_to_unit_interval(raw_score)
+            source = hit.get("_source", {}) or {}
+            suppressed = bool(source.get("suppressed"))
+            positive = int(source.get("positive_feedback_count") or 0)
+            rank_score = (
+                0.0
+                if suppressed
+                else base * (1.0 + 0.12 * min(positive, 12))
+            )
             matches.append({
-                "score": _similarity_score_to_unit_interval(score),
+                "score": base,
+                "rank_score": rank_score,
                 "question": source.get("question", ""),
-                "sql": source.get("sql", "")
+                "sql": source.get("sql", ""),
+                "doc_id": (hit.get("_id") or "") or "",
             })
 
         _print_rag_terminal(question, k=k, matches=matches)
 
         filtered = [
-            m for m in matches
-            if (m.get("sql") or "").strip() and m["score"] >= SIMILARITY_THRESHOLD
+            m
+            for m in matches
+            if (m.get("sql") or "").strip()
+            and m["score"] >= SIMILARITY_THRESHOLD
+            and m["rank_score"] > 0.0
         ]
-        filtered.sort(key=lambda x: x["score"], reverse=True)
-        return filtered[:k]
+        filtered.sort(key=lambda x: x["rank_score"], reverse=True)
+        out = []
+        for m in filtered[:k]:
+            out.append({
+                "score": m["score"],
+                "question": m["question"],
+                "sql": m["sql"],
+                "doc_id": m.get("doc_id") or "",
+            })
+        return out
 
     except Exception as e:
         _print_rag_terminal(
