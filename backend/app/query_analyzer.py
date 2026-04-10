@@ -13,6 +13,23 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app import config
 
+# ---------------------------------------------------------------------------
+# MODULE-LEVEL LLM SINGLETON (avoids per-request re-initialization overhead)
+# ---------------------------------------------------------------------------
+_analyzer_llm: ChatGoogleGenerativeAI | None = None
+
+
+def _get_analyzer_llm() -> ChatGoogleGenerativeAI:
+    global _analyzer_llm
+    if _analyzer_llm is None:
+        _analyzer_llm = ChatGoogleGenerativeAI(
+            model="gemini-flash-latest",
+            google_api_key=config.GEMINI_API_KEY,
+            temperature=0,
+        )
+    return _analyzer_llm
+
+
 # Simple in-memory cache with size limit
 # Key: normalized question string
 # Value: analysis result dict
@@ -138,11 +155,7 @@ def analyze_query(question: str, schema: str, preference: str = "AUTO") -> dict:
             input_variables=["schema", "question"],
             template=prompt_template,
         )
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-flash-latest",
-            google_api_key=config.GEMINI_API_KEY,
-            temperature=0,
-        )
+        llm = _get_analyzer_llm()  # Cached singleton — no re-init overhead
         chain = prompt | llm | StrOutputParser()
         raw_response = chain.invoke(
             {

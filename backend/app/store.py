@@ -10,16 +10,15 @@ import uuid
 from typing import Optional
 
 from app.embedding import get_embedding
-from app.pinecone_client import get_pinecone_index
-
+from app.opensearch_client import get_opensearch_client
+from app import config
 
 def store_query(question: str, sql: str) -> bool:
     """
-    Store a question and its corresponding SQL in Pinecone for semantic cache.
+    Store a question and its corresponding SQL in OpenSearch for semantic cache.
 
-    Generates an embedding for the question and upserts a vector with metadata
-    { "question": question, "sql": sql }. Does nothing if Pinecone or OpenAI
-    is unavailable; returns False in that case so the rest of the app is unchanged.
+    Generates an embedding for the question and indexes a document with 
+    the vector, question, and sql. Does nothing if OpenSearch is unavailable.
 
     Args:
         question: The user's natural language question.
@@ -35,20 +34,23 @@ def store_query(question: str, sql: str) -> bool:
     if not embedding:
         return False
 
-    index = get_pinecone_index()
-    if index is None:
+    client = get_opensearch_client()
+    if client is None:
         return False
 
     try:
-        vector_id = str(uuid.uuid4())
-        index.upsert(
-            vectors=[
-                {
-                    "id": vector_id,
-                    "values": embedding,
-                    "metadata": {"question": question, "sql": sql},
-                }
-            ],
+        doc_id = str(uuid.uuid4())
+        document = {
+            "embedding": embedding,
+            "question": question,
+            "sql": sql
+        }
+        
+        client.index(
+            index=config.OPENSEARCH_INDEX_NAME,
+            id=doc_id,
+            body=document,
+            refresh=True  # Make it available for search immediately
         )
         return True
     except Exception:

@@ -4,8 +4,9 @@ langchain
 langchain-core
 langchain-google-genai
 langgraph
+langsmith
 python-dotenv
 mysql-connector-python
 pydantic
-pinecone
+opensearch-py
 openai

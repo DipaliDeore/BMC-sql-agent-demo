@@ -26,9 +26,9 @@ DB_NAME: str     = os.getenv("DB_NAME", "sql_agent_demo")
 # Path to the TiDB Cloud SSL CA certificate file (download from TiDB console)
 DB_CA_CERT: str  = os.getenv("DB_CA_CERT", "")
 
-# ── Pinecone (semantic cache for question → SQL) ───────────────────────────────
-PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
-PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "sql-agent-cache")
+# ── OpenSearch (semantic cache for question → SQL) ─────────────────────────────
+OPENSEARCH_URL: str = os.getenv("OPENSEARCH_URL", "http://localhost:9200")
+OPENSEARCH_INDEX_NAME: str = os.getenv("OPENSEARCH_INDEX_NAME", "sql-agent-cache")
 
 # ── OpenAI (embeddings for Pinecone; text-embedding-3-small) ───────────────────
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
@@ -41,3 +41,16 @@ MAX_MULTI_RETRIES = int(os.getenv("MAX_MULTI_RETRIES", "2"))
 MAX_SUB_QUERIES = int(os.getenv("MAX_SUB_QUERIES", "4"))
 MAX_QUERY_LENGTH = int(os.getenv("MAX_QUERY_LENGTH", "400"))
 MAX_ANALYSIS_CACHE_SIZE = int(os.getenv("MAX_ANALYSIS_CACHE_SIZE", "100"))
+
+# ── Latency: one-shot SQL (1 LLM) vs ReAct agent (many round-trips) ────────────────
+USE_FAST_SQL_PIPELINE = os.getenv("USE_FAST_SQL_PIPELINE", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+# When preference is AUTO, skip the extra Gemini multi-query classifier (saves 1 call).
+SKIP_MULTI_QUERY_LLM = os.getenv("SKIP_MULTI_QUERY_LLM", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
