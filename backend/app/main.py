@@ -13,6 +13,8 @@ Run with:
     uvicorn app.main:app --reload
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -20,10 +22,22 @@ from app.routes import router
 from app.error_handlers import register_error_handlers
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app.checkpointer import init_checkpointer, shutdown_checkpointer
+    from app.chat_store import init_chat_schema
+
+    init_checkpointer()
+    init_chat_schema()
+    yield
+    shutdown_checkpointer()
+
+
 # ── Step 1: Create the FastAPI Application ────────────────────────────────────
 app = FastAPI(
     title="AI SQL Agent",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 

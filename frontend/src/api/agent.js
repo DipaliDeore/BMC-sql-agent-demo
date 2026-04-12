@@ -2,20 +2,15 @@
  * agent.js - API Layer
  * --------------------
  * Handles all API communication with the FastAPI backend.
- * Uses axios to send POST requests to the /api/query endpoint.
  */
 
 import axios from "axios";
 
-// Backend base URL
 const API_BASE_URL = "http://localhost:8000";
 
 const DEFAULT_ERROR_MESSAGE =
   "Hmm, something went wrong. Could you try again in a moment?";
 
-/**
- * Human-friendly message from an axios/API error (FastAPI often returns { detail: string }).
- */
 export function getApiErrorMessage(error) {
   if (!error?.response?.data) {
     return error?.message?.includes("Network Error")
@@ -33,20 +28,85 @@ export function getApiErrorMessage(error) {
 }
 
 /**
- * Send a natural language question to the backend.
- *
- * @param {string} question - The user's question in plain English
- * @returns {Promise<Object>} - Response with: question, sql, results, explanation, row_count
- * @throws {Error} - If the API request fails
+ * Map UI messages to API `messages` (optional transcript on each query).
  */
+export function mapMessagesForApi(messages) {
+  if (!messages?.length) return null;
+  return messages.map((m) => {
+    if (m.role === "user") {
+      return { role: "user", content: (m.content || "").trim() };
+    }
+    const text =
+      (m.explanation || m.content || m.errorText || "").trim() || "(assistant reply)";
+    return { role: "assistant", content: text };
+  });
+}
+
+export async function listChats() {
+  const response = await axios.get(`${API_BASE_URL}/api/chats`);
+  return response.data.chats || [];
+}
+
+export async function createChat(title) {
+  const response = await axios.post(`${API_BASE_URL}/api/chats`, {
+    title: title ?? null,
+  });
+  return response.data;
+}
+
+export async function getChatMessages(chatId) {
+  const response = await axios.get(`${API_BASE_URL}/api/chats/${chatId}/messages`);
+  return response.data.messages || [];
+}
+
+export async function renameChat(chatId, title) {
+  const response = await axios.patch(`${API_BASE_URL}/api/chats/${chatId}`, { title });
+  return response.data;
+}
+
+export async function deleteChat(chatId) {
+  await axios.delete(`${API_BASE_URL}/api/chats/${chatId}`);
+}
+
 /**
  * @param {string} question
- * @param {string} [conversationId] - Stable per-session id for multi-turn memory (MemorySaver thread)
- * @param {string} [preference] - Optional user preference ("AUTO", "SINGLE", "MULTI")
+ * @param {string} [conversationId]
+ * @param {string} [preference]
+ * @param {Array<{role:string,content:string}>|null} [messages] prior turns for the request body
  */
-export async function sendQuery(question, conversationId, preference = "AUTO") {
+export async function sendQuery(question, conversationId, preference = "AUTO", messages = null) {
   const body = { question, preference };
   if (conversationId) body.conversation_id = conversationId;
+  if (messages?.length) body.messages = messages;
   const response = await axios.post(`${API_BASE_URL}/api/query`, body);
+  return response.data;
+}
+
+/**
+ * @param {object} opts
+ * @param {string} opts.conversationId
+ * @param {string|number} opts.messageId - assistant row id from assistant_message_id
+ * @param {"up"|"down"} opts.vote
+ * @param {"sql"|"interpretation"|"other"|null} [opts.failureKind]
+ * @param {string|null} [opts.reason]
+ * @param {number|null} [opts.subIndex] - for multi-query blocks (0-based)
+ */
+export async function submitFeedback({
+  conversationId,
+  messageId,
+  vote,
+  failureKind = null,
+  reason = null,
+  subIndex = null,
+}) {
+  const body = {
+    conversation_id: conversationId,
+    message_id: String(messageId),
+    vote,
+    failure_kind: failureKind,
+    reason: reason || null,
+    sub_index: subIndex,
+  };
+  const response = await axios.post(`${API_BASE_URL}/api/feedback`, body);
   return response.data;
 }

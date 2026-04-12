@@ -75,6 +75,12 @@ body {
   color: var(--text);
 }
 
+.theme-transition {
+  transition:
+    background-color 0.22s ease,
+    color 0.22s ease;
+}
+
 /* Shell: sidebar + main; main shrinks correctly on narrow viewports */
 .app-shell {
   display: flex;

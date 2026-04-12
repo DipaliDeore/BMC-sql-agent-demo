@@ -2,11 +2,163 @@
  * MessageBubble.jsx - Chat Message Component
  */
 
-import React from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import ResultTable from "./ResultTable";
 import SqlViewer from "./SqlViewer";
+import { submitFeedback, getApiErrorMessage } from "../api/agent";
 
-export default function MessageBubble({ message, theme, onSend }) {
+function feedbackEntryForScope(message, subIndex) {
+  const list = message.feedbacks;
+  if (Array.isArray(list) && list.length) {
+    const hit = list.find((f) => {
+      if (!f || typeof f !== "object") return false;
+      if (subIndex == null) return f.sub_index == null;
+      return Number(f.sub_index) === Number(subIndex);
+    });
+    if (hit?.vote === "up" || hit?.vote === "down") return hit;
+  }
+  if (subIndex == null && message.feedback?.vote) return message.feedback;
+  return null;
+}
+
+function MessageFeedbackBar({ conversationId, serverMessageId, subIndex, existing }) {
+  const [submitted, setSubmitted] = useState(!!existing);
+  const [pickKind, setPickKind] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [note, setNote] = useState(existing ? "Thanks for your feedback." : null);
+
+  useEffect(() => {
+    setSubmitted(!!existing);
+    setNote(existing ? "Thanks for your feedback." : null);
+    setPickKind(false);
+    setErr(null);
+  }, [existing, serverMessageId, subIndex]);
+
+  const send = useCallback(
+    async (vote, failureKind = null) => {
+      if (!conversationId || serverMessageId == null) return;
+      setBusy(true);
+      setErr(null);
+      try {
+        const data = await submitFeedback({
+          conversationId,
+          messageId: serverMessageId,
+          vote,
+          failureKind,
+          subIndex: subIndex != null ? subIndex : null,
+        });
+        if (data.duplicate) {
+          setNote("Feedback was already recorded.");
+        } else {
+          setNote("Thanks for your feedback.");
+        }
+        setSubmitted(true);
+        setPickKind(false);
+      } catch (e) {
+        setErr(getApiErrorMessage(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [conversationId, serverMessageId, subIndex]
+  );
+
+  if (serverMessageId == null) return null;
+
+  const btnBase = {
+    fontFamily: "inherit",
+    fontSize: "13px",
+    fontWeight: 600,
+    borderRadius: "8px",
+    border: "1px solid var(--border)",
+    background: "var(--surface-2)",
+    color: "var(--text)",
+    cursor: busy ? "wait" : "pointer",
+    padding: "6px 12px",
+    opacity: busy ? 0.65 : 1,
+  };
+
+  return (
+    <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid var(--border-subtle)" }}>
+      {submitted ? (
+        <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted)" }}>{note || "Thanks!"}</p>
+      ) : (
+        <>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "12px", color: "var(--text-muted)", marginRight: "4px" }}>
+              Was this helpful?
+            </span>
+            <button
+              type="button"
+              disabled={busy}
+              aria-label="Thumbs up"
+              onClick={() => send("up")}
+              style={btnBase}
+            >
+              👍
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              aria-label="Thumbs down"
+              onClick={() => setPickKind(true)}
+              style={btnBase}
+            >
+              👎
+            </button>
+          </div>
+          {pickKind && (
+            <div style={{ marginTop: "10px" }}>
+              <p style={{ margin: "0 0 8px", fontSize: "12px", color: "var(--text-muted)" }}>
+                Was the SQL wrong or the interpretation?
+              </p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => send("down", "sql")}
+                  style={btnBase}
+                >
+                  SQL
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => send("down", "interpretation")}
+                  style={btnBase}
+                >
+                  Interpretation
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => send("down", "other")}
+                  style={btnBase}
+                >
+                  Not sure
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setPickKind(false)}
+                  style={{ ...btnBase, borderStyle: "dashed" }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+      {err && (
+        <p style={{ margin: "8px 0 0", fontSize: "12px", color: "var(--error)" }}>{err}</p>
+      )}
+    </div>
+  );
+}
+
+export default function MessageBubble({ message, theme, conversationId, onSend }) {
   const isUser = message.role === "user";
 
   if (isUser) {
@@ -156,7 +308,12 @@ export default function MessageBubble({ message, theme, onSend }) {
                 </div>
               )}
 
-
+              <MessageFeedbackBar
+                conversationId={conversationId}
+                serverMessageId={message.serverMessageId}
+                subIndex={index}
+                existing={feedbackEntryForScope(message, index)}
+              />
             </div>
           ))}
         </div>
@@ -232,7 +389,12 @@ export default function MessageBubble({ message, theme, onSend }) {
           </div>
         )}
 
-
+        <MessageFeedbackBar
+          conversationId={conversationId}
+          serverMessageId={message.serverMessageId}
+          subIndex={null}
+          existing={feedbackEntryForScope(message, null)}
+        />
       </div>
     </div>
   );

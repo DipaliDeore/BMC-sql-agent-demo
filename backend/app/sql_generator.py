@@ -4,7 +4,7 @@ sql_generator.py
 Module 3 — AI SQL Generator
 
 Converts natural language into a safe SQL SELECT + explanation using Google Gemini.
-Uses LangGraph with InMemorySaver so each conversation thread remembers prior Q&A
+Uses LangGraph with a shared checkpointer (Postgres when POSTGRES_URI is set).
 for follow-up questions ("same thing but last month", etc.).
 """
 
@@ -17,12 +17,12 @@ from typing import Annotated, Any
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 from app import config
+from app.checkpointer import get_checkpointer
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ Database Schema:
 
 
 # ---------------------------------------------------------------------------
-# LangGraph state + compiled app (InMemorySaver lives for process lifetime)
+# LangGraph state + compiled app (checkpointer from app.checkpointer)
 # ---------------------------------------------------------------------------
 
 _MAX_MESSAGES_FOR_LLM = 24  # cap context: prior turns + current user message
@@ -197,8 +197,7 @@ def _build_sql_app():
     graph.add_node("generate", _call_model)
     graph.add_edge(START, "generate")
     graph.add_edge("generate", END)
-    checkpointer = InMemorySaver()
-    return graph.compile(checkpointer=checkpointer)
+    return graph.compile(checkpointer=get_checkpointer())
 
 
 def get_sql_app():
@@ -223,12 +222,12 @@ def generate_sql_and_explanation(
     Convert a natural language question into SQL + explanation.
 
     When ``thread_id`` is set, prior turns in that thread are loaded from
-    InMemorySaver so follow-up questions have context.
+    the shared checkpointer so follow-up questions have context.
 
     Args:
         question: Current user message.
         schema: Database schema text.
-        references: Optional Pinecone-style similar (question, sql) examples.
+        references: Optional similar past (question, sql) examples from semantic cache.
         thread_id: LangGraph checkpoint thread (conversation id). If None, a
             one-off id is used so this call does not share memory with others.
     """

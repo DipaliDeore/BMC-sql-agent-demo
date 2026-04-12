@@ -1,32 +1,15 @@
 /**
- * LoadingMessage.jsx - Sequential loading status
+ * LoadingMessage.jsx — typing / thinking indicator
  */
 
-import React, { useState, useEffect } from "react";
-
-const LOADING_MESSAGES = [
-  "Taking a look at your question…",
-  "Finding the right information…",
-  "Putting together your results…",
-];
+import React from "react";
 
 export default function LoadingMessage() {
-  const [visibleCount, setVisibleCount] = useState(1);
-
-  useEffect(() => {
-    if (visibleCount < LOADING_MESSAGES.length) {
-      const timer = setTimeout(() => {
-        setVisibleCount((prev) => prev + 1);
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [visibleCount]);
-
   return (
     <div style={{ display: "flex", justifyContent: "flex-start", padding: "8px 0" }}>
       <div
         style={{
-          maxWidth: "min(85%, 400px)",
+          maxWidth: "min(85%, 420px)",
           padding: "14px 18px",
           borderRadius: "14px",
           borderTopLeftRadius: "4px",
@@ -40,7 +23,6 @@ export default function LoadingMessage() {
             display: "flex",
             alignItems: "center",
             gap: "10px",
-            marginBottom: visibleCount > 0 ? "10px" : 0,
           }}
         >
           <span
@@ -67,29 +49,14 @@ export default function LoadingMessage() {
           </span>
           <span
             style={{
-              fontSize: "11px",
-              fontWeight: 700,
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
+              fontSize: "14px",
               color: "var(--text-muted)",
+              fontWeight: 500,
             }}
           >
-            Working
+            Thinking…
           </span>
         </div>
-        {LOADING_MESSAGES.slice(0, visibleCount).map((msg, index) => (
-          <p
-            key={index}
-            style={{
-              fontSize: "13px",
-              color: "var(--text-muted)",
-              margin: index > 0 ? "8px 0 0" : 0,
-              lineHeight: 1.45,
-            }}
-          >
-            {msg}
-          </p>
-        ))}
       </div>
     </div>
   );
