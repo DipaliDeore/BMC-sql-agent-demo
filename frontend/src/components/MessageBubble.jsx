@@ -163,19 +163,17 @@ export default function MessageBubble({ message, theme, conversationId, onSend }
 
   if (isUser) {
     return (
-      <div style={{ display: "flex", justifyContent: "flex-end", padding: "2px 0" }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
         <div
           style={{
-            maxWidth: "min(85%, 640px)",
-            padding: "12px 16px",
-            borderRadius: "14px",
-            borderTopRightRadius: "4px",
+            maxWidth: "70%",
+            padding: "10px 16px",
+            borderRadius: "20px",
             backgroundColor: "var(--user-bubble)",
             border: "1px solid var(--user-bubble-border)",
-            fontSize: "14px",
-            lineHeight: 1.55,
+            fontSize: "15px",
+            lineHeight: 1.5,
             color: "var(--text)",
-            boxShadow: "var(--shadow-sm)",
           }}
         >
           {message.content}
@@ -186,17 +184,13 @@ export default function MessageBubble({ message, theme, conversationId, onSend }
 
   if (message.error) {
     return (
-      <div style={{ display: "flex", justifyContent: "flex-start", padding: "2px 0" }}>
+      <div style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
         <div
           style={{
-            maxWidth: "min(85%, 640px)",
-            padding: "14px 16px",
-            borderRadius: "14px",
-            borderTopLeftRadius: "4px",
-            backgroundColor: "var(--error-bg)",
-            border: "1px solid var(--border)",
-            fontSize: "14px",
-            lineHeight: 1.55,
+            maxWidth: "85%",
+            padding: "12px 0",
+            fontSize: "14.5px",
+            lineHeight: 1.6,
             color: "var(--error)",
           }}
         >
@@ -207,33 +201,14 @@ export default function MessageBubble({ message, theme, conversationId, onSend }
     );
   }
 
-  // ── Multi-query assistant response: one block per sub-question ─────────────
+  // ── Multi-query assistant response
   if (message.is_multi && message.sub_responses?.length) {
     return (
-      <div style={{ display: "flex", justifyContent: "flex-start", padding: "2px 0" }}>
-        <div
-          style={{
-            maxWidth: "min(92%, 800px)",
-            padding: "18px 20px",
-            borderRadius: "14px",
-            borderTopLeftRadius: "4px",
-            backgroundColor: "var(--assistant-bubble)",
-            border: "1px solid var(--border)",
-            color: "var(--text)",
-            boxShadow: "var(--shadow-md)",
-          }}
-        >
+      <div style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
+        <div style={{ width: "100%", padding: "12px 0", color: "var(--text)" }}>
           {message.explanation && (
-            <div style={{ marginBottom: "16px" }}>
-              <p
-                style={{
-                  fontSize: "14px",
-                  lineHeight: 1.65,
-                  color: "var(--text)",
-                  fontWeight: 600,
-                  whiteSpace: "pre-line",
-                }}
-              >
+            <div style={{ marginBottom: "20px" }}>
+              <p style={{ fontSize: "15px", lineHeight: 1.6, color: "var(--text)" }}>
                 {message.explanation}
               </p>
             </div>
@@ -243,77 +218,47 @@ export default function MessageBubble({ message, theme, conversationId, onSend }
             <div
               key={index}
               style={{
-                marginBottom: index < message.sub_responses.length - 1 ? "20px" : 0,
-                paddingBottom: index < message.sub_responses.length - 1 ? "20px" : 0,
-                borderBottom:
-                  index < message.sub_responses.length - 1 ? "1px solid var(--border-subtle)" : "none",
+                marginBottom: "32px",
+                paddingLeft: "16px",
+                borderLeft: "2px solid var(--border)",
               }}
             >
               <p
                 style={{
                   fontSize: "12px",
-                  fontWeight: 700,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
+                  fontWeight: 600,
                   color: "var(--text-muted)",
-                  marginBottom: "10px",
+                  marginBottom: "8px",
                 }}
               >
-                Query {index + 1}: {sub.question}
+                {sub.question}
               </p>
 
               {sub.explanation && (
-                <p
-                  style={{
-                    fontSize: "14px",
-                    lineHeight: 1.65,
-                    color: "var(--text)",
-                    marginBottom: "12px",
-                    whiteSpace: "pre-line",
-                  }}
-                >
+                <p style={{ fontSize: "15px", lineHeight: 1.6, color: "var(--text)", marginBottom: "16px" }}>
                   {sub.explanation}
                 </p>
               )}
 
               {sub.result_sentence ? (
-                <p style={{ fontSize: "15px", lineHeight: 1.65, fontWeight: 600, color: "var(--text)", marginBottom: "12px" }}>
+                <p style={{ fontSize: "15px", lineHeight: 1.6, fontWeight: 500, color: "var(--text)", marginBottom: "16px" }}>
                   {sub.result_sentence}
                 </p>
               ) : sub.results && sub.results.length > 0 ? (
-                <div style={{ marginBottom: "12px" }}>
+                <div style={{ marginBottom: "16px" }}>
                   <ResultTable results={sub.results} />
                 </div>
               ) : (
-                <p style={{ fontSize: "13px", color: "var(--text-muted)", fontStyle: "italic", marginBottom: "12px" }}>
+                <p style={{ fontSize: "14px", color: "var(--text-muted)", fontStyle: "italic", marginBottom: "16px" }}>
                   No records found.
                 </p>
               )}
 
               {sub.sql && (
-                <div style={{ marginTop: "12px" }}>
-                  <p
-                    style={{
-                      fontSize: "11px",
-                      color: "var(--text-muted)",
-                      marginBottom: "8px",
-                      fontWeight: 700,
-                      textTransform: "uppercase",
-                      letterSpacing: "0.06em",
-                    }}
-                  >
-                    Executed query
-                  </p>
+                <div style={{ marginTop: "16px" }}>
                   <SqlViewer sql={sub.sql} theme={theme} />
                 </div>
               )}
-
-              <MessageFeedbackBar
-                conversationId={conversationId}
-                serverMessageId={message.serverMessageId}
-                subIndex={index}
-                existing={feedbackEntryForScope(message, index)}
-              />
             </div>
           ))}
         </div>
@@ -322,70 +267,32 @@ export default function MessageBubble({ message, theme, conversationId, onSend }
   }
 
   return (
-    <div style={{ display: "flex", justifyContent: "flex-start", padding: "2px 0" }}>
-      <div
-        style={{
-          maxWidth: "min(92%, 800px)",
-          padding: "18px 20px",
-          borderRadius: "14px",
-          borderTopLeftRadius: "4px",
-          backgroundColor: "var(--assistant-bubble)",
-          border: "1px solid var(--border)",
-          color: "var(--text)",
-          boxShadow: "var(--shadow-md)",
-        }}
-      >
+    <div style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
+      <div style={{ width: "100%", padding: "12px 0", color: "var(--text)" }}>
         {message.explanation && (
-          <div style={{ marginBottom: "14px" }}>
-            <p
-              style={{
-                fontSize: "14px",
-                lineHeight: 1.65,
-                color: "var(--text)",
-                whiteSpace: "pre-line",
-              }}
-            >
+          <div style={{ marginBottom: "16px" }}>
+            <p style={{ fontSize: "15px", lineHeight: 1.6, color: "var(--text)" }}>
               {message.explanation}
             </p>
           </div>
         )}
 
-
-
         {message.result_sentence && (
-          <div style={{ marginBottom: "14px" }}>
-            <p style={{ fontSize: "15px", lineHeight: 1.65, fontWeight: 600, color: "var(--text)" }}>
+          <div style={{ marginBottom: "16px" }}>
+            <p style={{ fontSize: "15px", lineHeight: 1.6, fontWeight: 500, color: "var(--text)" }}>
               {message.result_sentence}
             </p>
           </div>
         )}
         {!message.result_sentence && message.results && message.results.length > 0 && (
-          <div style={{ marginBottom: "14px" }}>
+          <div style={{ marginBottom: "16px" }}>
             <ResultTable results={message.results} />
           </div>
         )}
 
         {message.sql && (
-          <div
-            style={{
-              marginTop: "16px",
-              paddingTop: "16px",
-              borderTop: "1px solid var(--border-subtle)",
-            }}
-          >
-            <p
-              style={{
-                fontSize: "11px",
-                color: "var(--text-muted)",
-                marginBottom: "8px",
-                fontWeight: 700,
-                textTransform: "uppercase",
-                letterSpacing: "0.06em",
-              }}
-            >
-              Executed query
-            </p>
-            <SqlViewer sql={message.sql} theme={theme} />
+          <div style={{ marginTop: "20px" }}>
+             <SqlViewer sql={message.sql} theme={theme} />
           </div>
         )}
 

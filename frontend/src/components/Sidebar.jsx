@@ -31,192 +31,86 @@ export default function Sidebar({
     <aside
       className="app-sidebar"
       style={{
-        width: "clamp(240px, 28%, 300px)",
+        width: "260px",
         flexShrink: 0,
-        backgroundColor: "var(--surface-1)",
+        backgroundColor: "var(--sidebar-bg)",
         borderRight: "1px solid var(--border)",
         color: "var(--text)",
         display: "flex",
         flexDirection: "column",
         height: "100%",
         overflow: "hidden",
-        boxShadow: "var(--shadow-sm)",
       }}
     >
-      <div
-        style={{
-          padding: "16px 14px 12px",
-          borderBottom: "1px solid var(--border-subtle)",
-        }}
-      >
-        <div
-          style={{
-            height: "3px",
-            width: "36px",
-            borderRadius: "2px",
-            background: "var(--header-accent)",
-            marginBottom: "10px",
-          }}
-        />
-        <h1
-          style={{
-            fontSize: "16px",
-            fontWeight: 700,
-            letterSpacing: "-0.02em",
-            margin: "0 0 14px",
-            lineHeight: 1.2,
-          }}
-        >
-          SQL Agent
-        </h1>
+      {/* Top Section: New Chat */}
+      <div style={{ padding: "16px 12px 8px" }}>
         <button
           type="button"
           onClick={onNewChat}
           style={{
             width: "100%",
-            padding: "11px 14px",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            padding: "10px 12px",
             fontSize: "14px",
-            fontWeight: 600,
-            borderRadius: "10px",
-            border: "1px solid var(--border)",
-            backgroundColor: "var(--surface-2)",
+            fontWeight: 500,
+            borderRadius: "8px",
+            border: "none",
+            backgroundColor: "transparent",
             color: "var(--text)",
             cursor: "pointer",
-            fontFamily: "inherit",
+            textAlign: "left",
             transition: "background-color 0.15s ease",
           }}
+          onMouseOver={(e) => (e.currentTarget.style.backgroundColor = "var(--surface-1)")}
+          onMouseOut={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
         >
-          + New chat
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          New chat
         </button>
       </div>
 
-      <div
-        style={{
-          padding: "10px 14px 6px",
-          fontSize: "11px",
-          fontWeight: 700,
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
-          color: "var(--text-muted)",
-        }}
-      >
-        Recent chats
-      </div>
-
-      <div style={{ flex: 1, overflowY: "auto", padding: "4px 10px 16px" }}>
-        {chats.length === 0 ? (
-          <p
-            style={{
-              padding: "20px 10px",
-              fontSize: "13px",
-              color: "var(--text-muted)",
-              textAlign: "center",
-              lineHeight: 1.5,
-            }}
-          >
-            No chats yet. Start with <strong>New chat</strong>.
-          </p>
-        ) : (
-          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "0 12px" }}>
+        {/* Recents Section */}
+        <div style={{ marginTop: "24px", marginBottom: "16px" }}>
+          <div style={{ padding: "0 12px 8px", fontSize: "12px", fontWeight: 600, color: "var(--text-muted)" }}>
+            Recents
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
             {chats.map((c) => {
               const active = c.id === activeChatId;
               return (
-                <li key={c.id} style={{ marginBottom: "6px" }}>
-                  <div
-                    style={{
-                      borderRadius: "10px",
-                      border: active ? "1px solid var(--accent)" : "1px solid transparent",
-                      backgroundColor: active ? "var(--surface-2)" : "transparent",
-                      padding: "8px 10px",
-                      transition: "background-color 0.12s ease, border-color 0.12s ease",
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => onSelectChat(c.id)}
-                      title={c.title}
-                      style={{
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "4px 0",
-                        fontSize: "13px",
-                        fontWeight: active ? 600 : 500,
-                        lineHeight: 1.4,
-                        border: "none",
-                        background: "transparent",
-                        color: "var(--text)",
-                        cursor: "pointer",
-                        display: "block",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontFamily: "inherit",
-                      }}
-                    >
-                      {c.title || "New chat"}
-                    </button>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        gap: "8px",
-                        marginTop: "4px",
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontSize: "11px",
-                          color: "var(--text-muted)",
-                        }}
-                      >
-                        {formatChatTime(c.updated_at)}
-                      </span>
-                      <span style={{ display: "flex", gap: "6px", flexShrink: 0 }}>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onRenameChat(c.id, c.title);
-                          }}
-                          style={{
-                            fontSize: "11px",
-                            padding: "2px 6px",
-                            border: "none",
-                            background: "transparent",
-                            color: "var(--text-muted)",
-                            cursor: "pointer",
-                            fontFamily: "inherit",
-                          }}
-                        >
-                          Rename
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onDeleteChat(c.id);
-                          }}
-                          style={{
-                            fontSize: "11px",
-                            padding: "2px 6px",
-                            border: "none",
-                            background: "transparent",
-                            color: "var(--error)",
-                            cursor: "pointer",
-                            fontFamily: "inherit",
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </span>
-                    </div>
-                  </div>
-                </li>
+                <div
+                  key={c.id}
+                  onClick={() => onSelectChat(c.id)}
+                  style={{
+                    padding: "8px 12px",
+                    fontSize: "13.5px",
+                    borderRadius: "8px",
+                    backgroundColor: active ? "var(--surface-1)" : "transparent",
+                    color: active ? "var(--text)" : "var(--text-muted)",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    transition: "background-color 0.15s ease, color 0.15s ease",
+                  }}
+                  onMouseOver={(e) => {
+                    if (!active) e.currentTarget.style.backgroundColor = "var(--surface-1)";
+                    if (!active) e.currentTarget.style.color = "var(--text)";
+                  }}
+                  onMouseOut={(e) => {
+                    if (!active) e.currentTarget.style.backgroundColor = "transparent";
+                    if (!active) e.currentTarget.style.color = "var(--text-muted)";
+                  }}
+                >
+                  {c.title || "New chat"}
+                </div>
               );
             })}
-          </ul>
-        )}
+          </div>
+        </div>
       </div>
     </aside>
   );

@@ -16,7 +16,7 @@ function readStoredTheme() {
   } catch {
     /* ignore */
   }
-  return "light";
+  return "dark";
 }
 
 export default function App() {
