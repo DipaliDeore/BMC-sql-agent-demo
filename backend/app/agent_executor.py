@@ -199,8 +199,16 @@ def _summarize_from_messages(messages: list) -> dict:
                     "status": "db_error",
                 }
             if data.get("success") is True:
-                final_sql = (data.get("sql") or "").strip()
-                final_results = make_json_serializable(data.get("results") or [])
+                q = (data.get("sql") or "").strip()
+                if q:
+                    if final_sql:
+                        final_sql += "; " + q
+                    else:
+                        final_sql = q
+                
+                rows = make_json_serializable(data.get("results") or [])
+                if isinstance(rows, list):
+                    final_results.extend(rows)
         elif isinstance(msg, AIMessage):
             last_ai_text = extract_text(msg.content)
 
@@ -259,15 +267,18 @@ def generate_and_execute_with_tools(
         )
     except Exception as e:
         error_str = str(e).lower()
-        if "429" in error_str or "resource_exhausted" in error_str or "quota" in error_str:
-            print("[AgentExecutor] Rate limit hit (429)")
+        # Explicit check for 429 / Quota / Resource Exhausted
+        if any(k in error_str for k in ("429", "resource_exhausted", "quota")):
+            print(f"[AgentExecutor] Quota limit hit: {error_str}")
             return {
                 "sql_query": "",
-                "explanation": "The AI service is temporarily rate-limited. Please try again shortly.",
+                "explanation": "The AI service quota has been reached (429 Resource Exhausted). Please wait a few minutes or try again later.",
                 "results": [],
                 "row_count": 0,
                 "status": "rate_limited",
             }
+        # Log and re-raise other unexpected errors
+        print(f"[AgentExecutor] Unexpected error: {error_str}")
         raise
 
     messages = result.get("messages") or []

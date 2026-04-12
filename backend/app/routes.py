@@ -64,14 +64,30 @@ _MULTI_INDICATORS = (
     " and also ", " and also show ", " additionally ", " also show ",
     " also find ", " also give ", " as well as ", " separately ",
     " in addition", " furthermore", " moreover", " along with ",
+    " and then ", " followed by ", " also count ", " also list ",
     "1.", "2.", "1)", "2)",
 )
 
 
 def _is_clearly_single(question: str) -> bool:
-    """Return True when no multi-query indicators are present — safe to skip LLM analysis."""
-    q = question.lower()
-    return not any(ind in q for ind in _MULTI_INDICATORS)
+    """
+    Return True when a question is likely single-part, skipping LLM analysis.
+    This saves quota for simple lookups.
+    """
+    q = question.strip().lower()
+    # Very short questions are almost always single
+    if len(q) < 20:
+        return True
+    
+    # Check for multi-part keywords
+    if any(ind in q for ind in _MULTI_INDICATORS):
+        return False
+        
+    # Check for coordinated questions (e.g. "What is X? And what is Y?")
+    if q.count('?') > 1:
+        return False
+        
+    return True
 
 
 # ── Request / Response Models ─────────────────────────────────────────────────
@@ -380,8 +396,8 @@ def _process_sub_query_sync(
                 "status": "error",
             }
 
-        if tool_result["status"] in ("db_error", "sql_error"):
-            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} failed: {tool_result['status']}")
+        if tool_result["status"] in ("db_error", "sql_error", "rate_limited"):
+            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} stopped: {tool_result['status']}")
             return {
                 "question": sub_question,
                 "sql": "",

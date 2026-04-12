@@ -42,12 +42,10 @@ ANALYZER_PROMPT = """You are a query analyzer for a MySQL database assistant.
 Analyze if this user question contains MULTIPLE INDEPENDENT database queries.
 
 RULES:
-- Split ONLY if queries are completely independent of each other
+- Split whenever user asks for multiple distinct pieces of information
+- If the question is "Show me A and B", split it into two queries
 - If one query needs data from another → return SINGLE
-- If the question is ambiguous and could reasonably be treated as either ONE joined result OR MULTIPLE separate results (e.g., "Show all customers and give total sales") → return AMBIGUOUS
-- If it is a single complex query → return SINGLE
-- If in doubt → return SINGLE
-- Maximum 4 sub-queries allowed
+- Maximum 10 sub-queries allowed
 - Each sub-query must be meaningful and standalone
 
 You must respond in ONLY this exact JSON format, nothing else:
