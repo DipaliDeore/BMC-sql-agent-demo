@@ -78,7 +78,6 @@ export default function ChatWindow({
       >
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
           <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text)" }}>AI SQL Agent</span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="m6 9 6 6 6-6"/></svg>
         </div>
         
         <div style={{ display: "flex", gap: "10px" }}>
@@ -181,9 +180,7 @@ export default function ChatWindow({
             boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)",
           }}
         >
-          <button type="button" style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer" }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
-          </button>
+
           
           <textarea
             ref={textareaRef}
