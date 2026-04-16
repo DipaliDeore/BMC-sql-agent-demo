@@ -13,7 +13,6 @@ Endpoints:
 
 import asyncio
 import functools
-import re
 import uuid
 from typing import Literal
 
@@ -25,10 +24,9 @@ from app import config
 from app.fast_sql_pipeline import run_fast_sql_pipeline
 from app.database import execute_query, get_database_schema
 from app.query_analyzer import analyze_query
-from app.sql_generator import generate_sql_and_explanation, is_dangerous_input
+from app.sql_generator import is_dangerous_input
 from app.query_validator import validate_sql, QueryValidationError
 from app.search import REFERENCE_TOP_K, find_similar_queries
-from app.sql_retry_engine import execute_with_retry
 from app.agent_executor import generate_and_execute_with_tools
 from app.store import store_query
 from app import chat_store
@@ -39,55 +37,6 @@ from app import feedback_ops, feedback_log
 # All routes defined here will automatically get the /api prefix.
 # Example: "/query" becomes "/api/query"
 router = APIRouter(prefix="/api", tags=["SQL Agent"])
-
-
-# ── Fast-path helpers (zero LLM calls) ───────────────────────────────────────
-
-_GREETING_PHRASES = frozenset({
-    "hi", "hello", "hey", "howdy", "hiya", "sup", "greetings",
-    "good morning", "good afternoon", "good evening", "good day",
-    "how are you", "how are you doing", "how is it going",
-    "hi there", "hello there", "hey there", "what's up", "whats up",
-    "yo", "namaste", "helo", "hii", "hiii",
-})
-
-
-def _is_pure_greeting(question: str) -> bool:
-    """Return True for pure greetings/small-talk — no DB question present."""
-    q = re.sub(r"[^\w\s]", "", question.strip().lower())
-    q = " ".join(q.split())
-    return q in _GREETING_PHRASES
-
-
-# Indicators that strongly suggest a multi-part question.
-_MULTI_INDICATORS = (
-    " and also ", " and also show ", " additionally ", " also show ",
-    " also find ", " also give ", " as well as ", " separately ",
-    " in addition", " furthermore", " moreover", " along with ",
-    " and then ", " followed by ", " also count ", " also list ",
-    "1.", "2.", "1)", "2)",
-)
-
-
-def _is_clearly_single(question: str) -> bool:
-    """
-    Return True when a question is likely single-part, skipping LLM analysis.
-    This saves quota for simple lookups.
-    """
-    q = question.strip().lower()
-    # Very short questions are almost always single
-    if len(q) < 20:
-        return True
-    
-    # Check for multi-part keywords
-    if any(ind in q for ind in _MULTI_INDICATORS):
-        return False
-        
-    # Check for coordinated questions (e.g. "What is X? And what is Y?")
-    if q.count('?') > 1:
-        return False
-        
-    return True
 
 
 # ── Request / Response Models ─────────────────────────────────────────────────
@@ -131,7 +80,6 @@ class QueryResponse(BaseModel):
     results: list[dict]  # Rows returned from the database
     explanation: str     # Plain-English explanation of the SQL query
     row_count: int       # Number of rows returned
-    result_summary: str | None = None  # Deprecated: use result_sentence for single-value
     result_sentence: str | None = None  # Natural language sentence for single value (e.g. "Total number of customers are 10")
     # Optional debug info to show what semantic cache retrieval returned.
     # This does not affect the main logic.
@@ -197,7 +145,6 @@ def _assistant_payload_from_response(resp: QueryResponse) -> dict:
         "explanation": resp.explanation,
         "row_count": resp.row_count,
         "result_sentence": resp.result_sentence,
-        "result_summary": resp.result_summary,
         "cache_references": resp.cache_references,
         "is_multi": resp.is_multi,
         "sub_responses": resp.sub_responses,
@@ -268,21 +215,6 @@ def _build_result_sentence(results: list[dict], answer_template: str | None = No
         except Exception:
             pass
     return f"The result is {formatted}."
-
-
-def _build_result_summary(results: list[dict]) -> str | None:
-    """Build summary for single-row multi-column (tabular case). Not used for single-value."""
-    if not results or len(results) != 1:
-        return None
-    row = results[0]
-    if not row or len(row) == 1:
-        return None  # Single value -> use result_sentence instead
-    parts = []
-    for key, val in row.items():
-        s = _format_single_value(val)
-        label = key.replace("SUM(", "").replace(")", "").replace("(", " ").strip() or key
-        parts.append(f"{label}: {s}")
-    return " · ".join(parts)
 
 
 # Plain-language phrases for common aggregate column names (demo schema)
@@ -561,11 +493,10 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             except QueryValidationError:
                 continue
 
-        # Tool calling — LLM generates SQL and executes via tool in one loop
-        tool_result = generate_and_execute_with_tools(
-            question=body.question,
-            schema=schema,
-            references=filtered_examples or None,
+        tool_result = _run_sql_agent(
+            body.question,
+            schema,
+            filtered_examples or None,
             thread_id=conversation_id,
         )
 
@@ -595,7 +526,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 sql="",
                 results=[],
                 row_count=0,
-                explanation="Sorry, could not generate a valid query. Please rephrasing.",
+                explanation="Sorry, could not generate a valid query. Please try rephrasing.",
                 conversation_id=conversation_id,
             )
 
@@ -642,7 +573,6 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             explanation=explanation,
             row_count=row_count,
             result_sentence=_build_result_sentence(result, answer_template),
-            result_summary=_build_result_summary(result),
             cache_references=filtered_examples or None,
             conversation_id=conversation_id,
             cache_doc_id=cache_doc_id,
@@ -655,7 +585,6 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
         queries = analysis['queries']
         print(f"[Multi-Query] Sub-queries: {queries}")
 
-        loop = asyncio.get_running_loop()
         tasks = [
             loop.run_in_executor(None, _process_sub_query_sync, sub_question, i, len(queries), query_id, schema, loop)
             for i, sub_question in enumerate(queries)

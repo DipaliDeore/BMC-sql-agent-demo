@@ -26,7 +26,7 @@ The server will start at **http://localhost:8000**.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET`  | `/health` | Health check – returns `{"status":"running"}` |
+| `GET`  | `/` | Health check – returns status and version JSON |
 | `POST` | `/api/query` | Submit a natural language question |
 | `GET`  | `/api/schema` | Returns the current DB schema |
 | `GET`  | `/docs` | Interactive Swagger UI |

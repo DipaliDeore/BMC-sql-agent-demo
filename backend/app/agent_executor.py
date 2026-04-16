@@ -123,14 +123,6 @@ def _build_success_explanation(row_count: int) -> str:
     return f"Here you go — found {row_count:,} records matching your query."
 
 
-def _build_success_explanation(row_count: int) -> str:
-    if row_count == 0:
-        return "The query ran successfully but no matching records were found."
-    if row_count == 1:
-        return "Got it! Here's what I found for you."
-    return f"Here you go — found {row_count:,} records matching your query."
-
-
 def extract_text(content):
     if isinstance(content, str):
         return content
@@ -224,7 +216,7 @@ def _summarize_from_messages(messages: list) -> dict:
     if had_tool_attempt:
         return {
             "sql_query": "",
-            "explanation": "Sorry, could not generate a valid query. Please rephrasing.",
+            "explanation": "Sorry, could not generate a valid query. Please try rephrasing.",
             "results": [],
             "row_count": 0,
             "status": "sql_error",

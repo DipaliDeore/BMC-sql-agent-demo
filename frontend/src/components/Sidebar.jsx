@@ -2,7 +2,7 @@
  * Sidebar.jsx — New chat + recent chats (ChatGPT-style)
  */
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 
 function formatChatTime(iso) {
   if (!iso) return "";
@@ -19,6 +19,28 @@ function formatChatTime(iso) {
   }
 }
 
+const menuSurface = {
+  backgroundColor: "var(--surface-1)",
+  border: "1px solid var(--border)",
+  borderRadius: "8px",
+  boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+  minWidth: "140px",
+  padding: "4px 0",
+  zIndex: 30,
+};
+
+const menuItem = {
+  display: "block",
+  width: "100%",
+  padding: "8px 14px",
+  fontSize: "13px",
+  textAlign: "left",
+  border: "none",
+  background: "transparent",
+  color: "var(--text)",
+  cursor: "pointer",
+};
+
 export default function Sidebar({
   chats,
   activeChatId,
@@ -27,6 +49,20 @@ export default function Sidebar({
   onRenameChat,
   onDeleteChat,
 }) {
+  const [hoveredRowId, setHoveredRowId] = useState(null);
+  const [menuOpenId, setMenuOpenId] = useState(null);
+
+  useEffect(() => {
+    if (menuOpenId == null) return;
+    const onDocMouseDown = (e) => {
+      const root = e.target.closest?.("[data-chat-menu-root]");
+      if (root && root.getAttribute("data-chat-menu-root") === menuOpenId) return;
+      setMenuOpenId(null);
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [menuOpenId]);
+
   return (
     <aside
       className="app-sidebar"
@@ -42,7 +78,6 @@ export default function Sidebar({
         overflow: "hidden",
       }}
     >
-      {/* Top Section: New Chat */}
       <div style={{ padding: "16px 12px 8px" }}>
         <button
           type="button"
@@ -72,7 +107,6 @@ export default function Sidebar({
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "0 12px" }}>
-        {/* Recents Section */}
         <div style={{ marginTop: "24px", marginBottom: "16px" }}>
           <div style={{ padding: "0 12px 8px", fontSize: "12px", fontWeight: 600, color: "var(--text-muted)" }}>
             Recents
@@ -80,32 +114,151 @@ export default function Sidebar({
           <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
             {chats.map((c) => {
               const active = c.id === activeChatId;
+              const showActions = hoveredRowId === c.id || menuOpenId === c.id;
+              const menuOpen = menuOpenId === c.id;
+              const title = c.title || "New chat";
+
               return (
                 <div
                   key={c.id}
-                  onClick={() => onSelectChat(c.id)}
+                  data-chat-menu-root={c.id}
+                  title={formatChatTime(c.updated_at) || undefined}
+                  onMouseEnter={() => setHoveredRowId(c.id)}
+                  onMouseLeave={() => setHoveredRowId((id) => (id === c.id ? null : id))}
                   style={{
-                    padding: "8px 12px",
-                    fontSize: "13.5px",
+                    position: "relative",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "4px",
+                    padding: "4px 6px 4px 8px",
                     borderRadius: "8px",
-                    backgroundColor: active ? "var(--surface-1)" : "transparent",
-                    color: active ? "var(--text)" : "var(--text-muted)",
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
+                    backgroundColor:
+                      active || hoveredRowId === c.id || menuOpenId === c.id
+                        ? "var(--surface-1)"
+                        : "transparent",
                     transition: "background-color 0.15s ease, color 0.15s ease",
                   }}
-                  onMouseOver={(e) => {
-                    if (!active) e.currentTarget.style.backgroundColor = "var(--surface-1)";
-                    if (!active) e.currentTarget.style.color = "var(--text)";
-                  }}
-                  onMouseOut={(e) => {
-                    if (!active) e.currentTarget.style.backgroundColor = "transparent";
-                    if (!active) e.currentTarget.style.color = "var(--text-muted)";
-                  }}
                 >
-                  {c.title || "New chat"}
+                  <button
+                    type="button"
+                    onClick={() => onSelectChat(c.id)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      padding: "6px 4px 6px 6px",
+                      fontSize: "13.5px",
+                      border: "none",
+                      borderRadius: "6px",
+                      background: "transparent",
+                      color: active ? "var(--text)" : "var(--text-muted)",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    onMouseOver={(e) => {
+                      if (!active) {
+                        e.currentTarget.style.color = "var(--text)";
+                      }
+                    }}
+                    onMouseOut={(e) => {
+                      if (!active) {
+                        e.currentTarget.style.color = "var(--text-muted)";
+                      }
+                    }}
+                  >
+                    {title}
+                  </button>
+
+                  {showActions && (
+                    <button
+                      type="button"
+                      aria-label="Chat options"
+                      aria-expanded={menuOpen}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMenuOpenId(menuOpen ? null : c.id);
+                      }}
+                      style={{
+                        flexShrink: 0,
+                        width: "28px",
+                        height: "28px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        border: "none",
+                        borderRadius: "6px",
+                        backgroundColor: menuOpen ? "var(--surface-1)" : "transparent",
+                        color: "var(--text-muted)",
+                        cursor: "pointer",
+                      }}
+                      onMouseOver={(e) => {
+                        e.currentTarget.style.backgroundColor = "var(--surface-1)";
+                        e.currentTarget.style.color = "var(--text)";
+                      }}
+                      onMouseOut={(e) => {
+                        if (!menuOpen) e.currentTarget.style.backgroundColor = "transparent";
+                        e.currentTarget.style.color = menuOpen ? "var(--text)" : "var(--text-muted)";
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                        <circle cx="5" cy="12" r="2" />
+                        <circle cx="12" cy="12" r="2" />
+                        <circle cx="19" cy="12" r="2" />
+                      </svg>
+                    </button>
+                  )}
+
+                  {menuOpen && (
+                    <div
+                      role="menu"
+                      style={{
+                        position: "absolute",
+                        right: "4px",
+                        top: "calc(100% - 2px)",
+                        ...menuSurface,
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        style={menuItem}
+                        onMouseOver={(e) => {
+                          e.currentTarget.style.backgroundColor = "var(--sidebar-bg)";
+                        }}
+                        onMouseOut={(e) => {
+                          e.currentTarget.style.backgroundColor = "transparent";
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuOpenId(null);
+                          onRenameChat(c.id, title);
+                        }}
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        style={{ ...menuItem, color: "var(--error)" }}
+                        onMouseOver={(e) => {
+                          e.currentTarget.style.backgroundColor = "var(--sidebar-bg)";
+                        }}
+                        onMouseOut={(e) => {
+                          e.currentTarget.style.backgroundColor = "transparent";
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuOpenId(null);
+                          onDeleteChat(c.id);
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}

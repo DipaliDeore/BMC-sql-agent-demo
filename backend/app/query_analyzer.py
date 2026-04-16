@@ -45,7 +45,7 @@ RULES:
 - Split whenever user asks for multiple distinct pieces of information
 - If the question is "Show me A and B", split it into two queries
 - If one query needs data from another → return SINGLE
-- Maximum 10 sub-queries allowed
+- Maximum {max_sub_queries} sub-queries allowed (hard limit)
 - Each sub-query must be meaningful and standalone
 
 You must respond in ONLY this exact JSON format, nothing else:
@@ -150,7 +150,7 @@ def analyze_query(question: str, schema: str, preference: str = "AUTO") -> dict:
             prompt_template += "\n\nCRITICAL INSTRUCTION: The user has EXPLICITLY requested to treat this as multiple queries. You MUST return a 'MULTI' JSON response and split the question into reasonable sub-queries. Do NOT return 'AMBIGUOUS' or 'SINGLE' unless it is absolutely impossible to split."
 
         prompt = PromptTemplate(
-            input_variables=["schema", "question"],
+            input_variables=["schema", "question", "max_sub_queries"],
             template=prompt_template,
         )
         llm = _get_analyzer_llm()  # Cached singleton — no re-init overhead
@@ -159,6 +159,7 @@ def analyze_query(question: str, schema: str, preference: str = "AUTO") -> dict:
             {
                 "schema": schema,
                 "question": question,
+                "max_sub_queries": config.MAX_SUB_QUERIES,
             }
         )
 
