@@ -299,53 +299,6 @@ def get_message(chat_id: str, message_id: int) -> dict[str, Any] | None:
             }
 
 
-def patch_message_payload(chat_id: str, message_id: int, patch: dict[str, Any]) -> bool:
-    """Shallow-merge keys into the message JSON payload (e.g. feedback state)."""
-    if not patch:
-        return False
-    pool = get_postgres_pool()
-    if pool is None:
-        for m in _MEM_MESSAGES.get(chat_id, []):
-            try:
-                if int(m["id"]) != int(message_id):
-                    continue
-            except (TypeError, ValueError):
-                continue
-            pl = m.get("payload")
-            if pl is None:
-                pl = {}
-            elif not isinstance(pl, dict):
-                pl = {}
-            m["payload"] = {**pl, **patch}
-            return True
-        return False
-    with pool.connection() as conn:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                "SELECT payload FROM bmcs_chat_messages WHERE chat_id = %s AND id = %s",
-                (chat_id, message_id),
-            )
-            row = cur.fetchone()
-            if not row:
-                return False
-            pl = row["payload"]
-            if isinstance(pl, str):
-                try:
-                    pl = json.loads(pl)
-                except json.JSONDecodeError:
-                    pl = {}
-            if pl is None:
-                pl = {}
-            if not isinstance(pl, dict):
-                pl = {}
-            merged = {**pl, **patch}
-            cur.execute(
-                "UPDATE bmcs_chat_messages SET payload = %s WHERE chat_id = %s AND id = %s",
-                (Json(merged), chat_id, message_id),
-            )
-            return cur.rowcount > 0
-
-
 def list_messages(chat_id: str) -> list[dict[str, Any]]:
     pool = get_postgres_pool()
     if pool is None:

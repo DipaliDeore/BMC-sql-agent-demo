@@ -20,7 +20,7 @@ def store_query(question: str, sql: str, doc_id: str | None = None) -> bool:
     Store a question and its corresponding SQL in OpenSearch for semantic cache.
 
     Generates an embedding for the question and indexes a document with
-    the vector, question, sql, and default feedback metadata. Does nothing if
+    the vector, question, sql, and default cache metadata. Does nothing if
     OpenSearch is unavailable.
 
     Args:
@@ -48,8 +48,6 @@ def store_query(question: str, sql: str, doc_id: str | None = None) -> bool:
             "embedding": embedding,
             "question": question,
             "sql": sql,
-            "positive_feedback_count": 0,
-            "negative_feedback_count": 0,
             "trust_score": _DEFAULT_TRUST,
             "suppressed": False,
         }

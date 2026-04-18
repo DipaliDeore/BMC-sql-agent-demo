@@ -82,31 +82,3 @@ export async function sendQuery(question, conversationId, preference = "AUTO", m
   return response.data;
 }
 
-/**
- * @param {object} opts
- * @param {string} opts.conversationId
- * @param {string|number} opts.messageId - assistant row id from assistant_message_id
- * @param {"up"|"down"} opts.vote
- * @param {"sql"|"interpretation"|"other"|null} [opts.failureKind]
- * @param {string|null} [opts.reason]
- * @param {number|null} [opts.subIndex] - for multi-query blocks (0-based)
- */
-export async function submitFeedback({
-  conversationId,
-  messageId,
-  vote,
-  failureKind = null,
-  reason = null,
-  subIndex = null,
-}) {
-  const body = {
-    conversation_id: conversationId,
-    message_id: String(messageId),
-    vote,
-    failure_kind: failureKind,
-    reason: reason || null,
-    sub_index: subIndex,
-  };
-  const response = await axios.post(`${API_BASE_URL}/api/feedback`, body);
-  return response.data;
-}

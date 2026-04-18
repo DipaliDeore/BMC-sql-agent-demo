@@ -14,8 +14,6 @@ Endpoints:
 import asyncio
 import functools
 import uuid
-from typing import Literal
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from langsmith import traceable
@@ -30,7 +28,6 @@ from app.search import REFERENCE_TOP_K, find_similar_queries
 from app.agent_executor import generate_and_execute_with_tools
 from app.store import store_query
 from app import chat_store
-from app import feedback_ops, feedback_log
 
 
 # ── Create API Router ─────────────────────────────────────────────────────────
@@ -89,46 +86,10 @@ class QueryResponse(BaseModel):
     # Multi-query responses (optional; defaults keep single-query clients unchanged)
     is_multi: bool = False
     sub_responses: list[dict] = Field(default_factory=list)
-    # OpenSearch document id for the (question, SQL) pair stored after success — for feedback.
+    # OpenSearch document id for the (question, SQL) pair stored after success (semantic cache).
     cache_doc_id: str | None = None
-    # DB id of the assistant row saved for this response (client sends back for POST /api/feedback).
+    # DB id of the assistant row saved for this response.
     assistant_message_id: str | None = None
-
-
-def _feedback_already_submitted(payload: dict, sub_index: int | None) -> bool:
-    """True if this message already has feedback for the same scope (whole message or sub_index)."""
-    hist: list = []
-    raw_hist = payload.get("feedbacks")
-    if isinstance(raw_hist, list):
-        hist.extend(raw_hist)
-    legacy = payload.get("feedback")
-    if isinstance(legacy, dict) and legacy.get("vote") in ("up", "down"):
-        hist.append(legacy)
-    for item in hist:
-        if not isinstance(item, dict) or item.get("vote") not in ("up", "down"):
-            continue
-        isub = item.get("sub_index")
-        if isub is None and sub_index is None:
-            return True
-        if isub is not None and sub_index is not None:
-            try:
-                if int(isub) == int(sub_index):
-                    return True
-            except (TypeError, ValueError):
-                continue
-    return False
-
-
-class FeedbackRequest(BaseModel):
-    """Explicit thumbs up/down on an assistant message."""
-
-    conversation_id: str = Field(..., min_length=1)
-    message_id: str = Field(..., min_length=1)
-    vote: Literal["up", "down"]
-    failure_kind: Literal["sql", "interpretation", "other"] | None = None
-    reason: str | None = Field(default=None, max_length=2000)
-    # For is_multi responses: which sub-query block (0-based) the feedback refers to.
-    sub_index: int | None = Field(default=None, ge=0)
 
 
 def _assistant_chat_content(resp: QueryResponse) -> str:
@@ -455,7 +416,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 conversation_id=conversation_id,
             )
 
-        # Fire-and-forget: store in OpenSearch after response — doc id is known up front for feedback.
+        # Fire-and-forget: store in OpenSearch after response — doc id is known up front for cache_doc_id.
         cache_doc_id = str(uuid.uuid4())
         loop.run_in_executor(
             None,
@@ -541,109 +502,6 @@ async def handle_query(body: QueryRequest):
         _assistant_payload_from_response(response),
     )
     return response.model_copy(update={"assistant_message_id": str(row["id"])})
-
-
-@router.post("/feedback")
-async def post_feedback(body: FeedbackRequest):
-    """
-    Thumbs up/down on an assistant turn. Updates OpenSearch cache doc when cache_doc_id
-    is present on the stored message payload; otherwise logs only (neutral / no vector change).
-    No feedback (client sends nothing) is handled by omission — this endpoint is not called.
-    """
-    try:
-        mid = int(body.message_id.strip())
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="message_id must be a numeric id")
-
-    if chat_store.get_chat(body.conversation_id) is None:
-        raise HTTPException(status_code=404, detail="Chat not found")
-
-    msg = chat_store.get_message(body.conversation_id.strip(), mid)
-    if msg is None:
-        raise HTTPException(status_code=404, detail="Message not found")
-    if (msg.get("role") or "") != "assistant":
-        raise HTTPException(status_code=400, detail="Feedback applies only to assistant messages")
-
-    payload = msg.get("payload") or {}
-    if not isinstance(payload, dict):
-        payload = {}
-
-    if _feedback_already_submitted(payload, body.sub_index):
-        return {
-            "ok": True,
-            "duplicate": True,
-            "vector_updated": False,
-            "cache_doc_id": None,
-        }
-
-    cache_doc_id: str | None = None
-    if body.sub_index is not None:
-        subs = payload.get("sub_responses") or []
-        if body.sub_index < len(subs) and isinstance(subs[body.sub_index], dict):
-            cid = (subs[body.sub_index].get("cache_doc_id") or "").strip()
-            cache_doc_id = cid or None
-    else:
-        cid = (payload.get("cache_doc_id") or "").strip()
-        cache_doc_id = cid or None
-
-    vector_updated = False
-    loop = asyncio.get_running_loop()
-    if cache_doc_id:
-        if body.vote == "up":
-            vector_updated = await loop.run_in_executor(
-                None, feedback_ops.apply_positive_feedback, cache_doc_id
-            )
-        else:
-            vector_updated = await loop.run_in_executor(
-                None, feedback_ops.apply_negative_feedback, cache_doc_id
-            )
-
-    reason_trunc = (body.reason or "").strip()[:500] or None
-    feedback_log.log_feedback_event(
-        {
-            "vote": body.vote,
-            "conversation_id": body.conversation_id.strip(),
-            "message_id": mid,
-            "sub_index": body.sub_index,
-            "failure_kind": body.failure_kind,
-            "reason": reason_trunc,
-            "cache_doc_id": cache_doc_id,
-            "vector_updated": vector_updated,
-        }
-    )
-
-    if body.vote == "up" and vector_updated:
-        feedback_log.log_metric_event(
-            "explicit_positive_feedback",
-            {"conversation_id": body.conversation_id.strip(), "message_id": mid},
-        )
-
-    feedbacks: list = []
-    if isinstance(payload.get("feedbacks"), list):
-        feedbacks = [x for x in payload["feedbacks"] if isinstance(x, dict)]
-    elif isinstance(payload.get("feedback"), dict) and payload["feedback"].get("vote") in (
-        "up",
-        "down",
-    ):
-        feedbacks = [payload["feedback"]]
-    entry = {
-        "vote": body.vote,
-        "failure_kind": body.failure_kind,
-        "sub_index": body.sub_index,
-    }
-    feedbacks.append(entry)
-    chat_store.patch_message_payload(
-        body.conversation_id.strip(),
-        mid,
-        {"feedbacks": feedbacks, "feedback": entry},
-    )
-
-    return {
-        "ok": True,
-        "duplicate": False,
-        "vector_updated": vector_updated,
-        "cache_doc_id": cache_doc_id,
-    }
 
 
 @router.get("/chats")

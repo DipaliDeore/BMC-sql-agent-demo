@@ -78,40 +78,28 @@ export default function Sidebar({
         overflow: "hidden",
       }}
     >
-      <div style={{ padding: "16px 12px 8px" }}>
-        <button
-          type="button"
-          onClick={onNewChat}
-          style={{
-            width: "100%",
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            padding: "10px 12px",
-            fontSize: "14px",
-            fontWeight: 500,
-            borderRadius: "8px",
-            border: "none",
-            backgroundColor: "transparent",
-            color: "var(--text)",
-            cursor: "pointer",
-            textAlign: "left",
-            transition: "background-color 0.15s ease",
-          }}
-          onMouseOver={(e) => (e.currentTarget.style.backgroundColor = "var(--surface-1)")}
-          onMouseOut={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-        >
+      <div style={{ padding: "18px 14px 10px" }}>
+        <button type="button" className="sidebar-new-chat" onClick={onNewChat}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
           New chat
         </button>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "0 12px" }}>
-        <div style={{ marginTop: "24px", marginBottom: "16px" }}>
-          <div style={{ padding: "0 12px 8px", fontSize: "12px", fontWeight: 600, color: "var(--text-muted)" }}>
+        <div style={{ marginTop: "20px", marginBottom: "14px" }}>
+          <div
+            style={{
+              padding: "0 12px 10px",
+              fontSize: "11px",
+              fontWeight: 700,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              color: "var(--text-muted)",
+            }}
+          >
             Recents
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
             {chats.map((c) => {
               const active = c.id === activeChatId;
               const showActions = hoveredRowId === c.id || menuOpenId === c.id;

@@ -9,8 +9,6 @@ import LoadingMessage from "./LoadingMessage";
 export default function ChatWindow({
   theme,
   toggleTheme,
-  chatTitle,
-  conversationId,
   messages,
   loading,
   onSend,
@@ -65,166 +63,87 @@ export default function ChatWindow({
         position: "relative",
       }}
     >
-      <header
-        style={{
-          padding: "12px 20px",
-          backgroundColor: "var(--app-bg)",
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          zIndex: 10,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <span style={{ fontSize: "14px", fontWeight: 600, color: "var(--text)" }}>AI SQL Agent</span>
+      <header className="chat-header-bar">
+        <div style={{ minWidth: 0 }}>
+          <div className="chat-header-brand">SQL Agent</div>
         </div>
-        
-        <div style={{ display: "flex", gap: "10px" }}>
-           <button
-             type="button"
-             onClick={toggleTheme}
-             style={{
-               width: "32px",
-               height: "32px",
-               borderRadius: "50%",
-               border: "1px solid var(--border)",
-               backgroundColor: "transparent",
-               color: "var(--text)",
-               cursor: "pointer",
-               display: "flex",
-               alignItems: "center",
-               justifyContent: "center",
-               fontSize: "14px"
-             }}
-           >
-             {isDark ? "🔆" : "🌙"}
-           </button>
-        </div>
+
+        <button
+          type="button"
+          className="icon-btn-ghost"
+          onClick={toggleTheme}
+          aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
+        >
+          {isDark ? "🔆" : "🌙"}
+        </button>
       </header>
 
       <div
         style={{
           flex: 1,
           overflowY: "auto",
-          padding: "0 0 100px",
+          padding: "0 0 108px",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
         }}
       >
-        <div style={{ width: "100%", maxWidth: "800px", padding: "0 24px" }}>
+        <div style={{ width: "100%", maxWidth: "820px", padding: "0 clamp(16px, 4vw, 28px)" }}>
           {messages.length === 0 && !loading && (
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                minHeight: "min(320px, 60vh)",
-                textAlign: "center",
-              }}
-            >
-              <h1
-                style={{
-                  color: "var(--text)",
-                  fontSize: "28px",
-                  fontWeight: 600,
-                  marginBottom: "40px",
-                }}
-              >
-                Hello! How can I help you find insights today?
-              </h1>
+            <div className="chat-empty-state">
+              <h1>Hello! How can I help you find insights today?</h1>
+              <p>Ask in plain language — I’ll translate to SQL and explain the results.</p>
             </div>
           )}
 
-          <div style={{ display: "flex", flexDirection: "column", gap: "24px", paddingTop: "20px" }}>
+          <div className="chat-messages-stack">
             {messages.map((msg, index) => (
               <MessageBubble
                 key={msg.id != null ? String(msg.id) : `m-${index}`}
                 message={msg}
                 theme={theme}
-                conversationId={conversationId}
-                onSend={onSend}
               />
             ))}
           </div>
 
           {loading && <LoadingMessage />}
         </div>
-        <div ref={bottomRef} style={{ height: "40px" }} />
+        <div ref={bottomRef} style={{ height: "32px" }} />
       </div>
 
-      {/* Pill-shaped Floating Input */}
-      <div
-        style={{
-          position: "absolute",
-          bottom: "24px",
-          left: "50%",
-          transform: "translateX(-50%)",
-          width: "calc(100% - 48px)",
-          maxWidth: "768px",
-          zIndex: 20,
-        }}
-      >
-        <form
-          onSubmit={handleSubmit}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "10px",
-            padding: "8px 12px 8px 16px",
-            backgroundColor: "var(--surface-1)",
-            border: "1px solid var(--border)",
-            borderRadius: "26px",
-            boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)",
-          }}
-        >
-
-          
+      <div className="chat-composer-wrap">
+        <form className="chat-composer" onSubmit={handleSubmit}>
           <textarea
             ref={textareaRef}
             rows={1}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask anything"
+            placeholder="Ask a question…"
             disabled={loading}
-            style={{
-              flex: 1,
-              backgroundColor: "transparent",
-              border: "none",
-              color: "var(--text)",
-              fontSize: "15px",
-              padding: "4px 0",
-              resize: "none",
-              fontFamily: "inherit",
-              outline: "none",
-              maxHeight: "200px",
-              lineHeight: "1.5"
-            }}
+            aria-label="Message"
           />
 
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <button 
-              type="submit" 
-              disabled={loading || !inputValue.trim()}
-              style={{ 
-                width: "32px", 
-                height: "32px", 
-                borderRadius: "50%", 
-                backgroundColor: loading || !inputValue.trim() ? "var(--surface-3)" : "var(--text)", 
-                color: loading || !inputValue.trim() ? "var(--text-muted)" : "var(--app-bg)", 
-                border: "none", 
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center"
-              }}
+          <button
+            type="submit"
+            className="chat-send-btn"
+            disabled={loading || !inputValue.trim()}
+            aria-label="Send message"
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 7-7 7 7M12 19V5"/></svg>
-            </button>
-          </div>
+              <path d="m5 12 7-7 7 7M12 19V5" />
+            </svg>
+          </button>
         </form>
       </div>
     </div>

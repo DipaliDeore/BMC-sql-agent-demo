@@ -117,12 +117,7 @@ def find_similar_queries(question: str, top_k: int | None = None) -> list[dict[s
             base = _similarity_score_to_unit_interval(raw_score)
             source = hit.get("_source", {}) or {}
             suppressed = bool(source.get("suppressed"))
-            positive = int(source.get("positive_feedback_count") or 0)
-            rank_score = (
-                0.0
-                if suppressed
-                else base * (1.0 + 0.12 * min(positive, 12))
-            )
+            rank_score = 0.0 if suppressed else base
             matches.append({
                 "score": base,
                 "rank_score": rank_score,
