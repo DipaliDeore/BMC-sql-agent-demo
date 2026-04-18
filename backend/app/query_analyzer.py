@@ -23,7 +23,7 @@ def _get_analyzer_llm() -> ChatGoogleGenerativeAI:
     global _analyzer_llm
     if _analyzer_llm is None:
         _analyzer_llm = ChatGoogleGenerativeAI(
-            model="gemini-flash-latest",
+            model="gemini-2.5-flash",
             google_api_key=config.GEMINI_API_KEY,
             temperature=0,
         )

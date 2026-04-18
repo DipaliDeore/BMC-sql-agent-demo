@@ -78,7 +78,7 @@ def fix_sql_query(question: str, previous_sql: str, error_message: str, schema: 
     try:
         # Build the same model family used by sql_generator.py.
         llm = ChatGoogleGenerativeAI(
-            model="gemini-flash-latest",
+            model="gemini-2.5-flash",
             google_api_key=config.GEMINI_API_KEY,
             temperature=0,
         )

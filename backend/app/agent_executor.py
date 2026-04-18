@@ -29,7 +29,7 @@ def _get_llm() -> ChatGoogleGenerativeAI:
     global _llm
     if _llm is None:
         _llm = ChatGoogleGenerativeAI(
-            model="gemini-flash-latest",
+            model="gemini-2.5-flash",
             google_api_key=config.GEMINI_API_KEY,
             temperature=0,
         )
@@ -51,7 +51,8 @@ YOUR TASK:
    - Call run_sql_query
 
 STRICT RULES:
-- Max 3 tool calls
+- Max 6 tool calls
+- If the user asks for multiple distinct datasets or questions (e.g. 'How many customers and what are the top 3 products?'), you MUST explicitly make MULTIPLE PARALLEL tool calls at the exact same time by outputting an array with multiple run_sql_query calls. Do not process them one by one.
 - If DB_ERROR → STOP immediately
 - If SQL_ERROR → fix and retry (max 2 retries)
 - After success → you may give a short explanation in plain text (no further tool calls needed)
@@ -173,10 +174,9 @@ def _summarize_from_messages(messages: list) -> dict:
     idx = _last_human_index(messages)
     tail = messages[idx + 1 :] if idx >= 0 else messages
 
-    final_sql = ""
-    final_results: list = []
     had_tool_attempt = False
     last_ai_text = ""
+    successful_tools = []
 
     for msg in tail:
         if isinstance(msg, ToolMessage):
@@ -191,26 +191,49 @@ def _summarize_from_messages(messages: list) -> dict:
                     "status": "db_error",
                 }
             if data.get("success") is True:
-                q = (data.get("sql") or "").strip()
-                if q:
-                    if final_sql:
-                        final_sql += "; " + q
-                    else:
-                        final_sql = q
-                
-                rows = make_json_serializable(data.get("results") or [])
-                if isinstance(rows, list):
-                    final_results.extend(rows)
+                successful_tools.append(data)
         elif isinstance(msg, AIMessage):
             last_ai_text = extract_text(msg.content)
 
-    if final_sql and final_results is not None:
+    if len(successful_tools) == 1:
+        data = successful_tools[0]
+        rows = make_json_serializable(data.get("results") or [])
+        if not isinstance(rows, list):
+            rows = [rows]
         return {
-            "sql_query": final_sql,
-            "explanation": _build_success_explanation(len(final_results)),
-            "results": final_results,
-            "row_count": len(final_results),
+            "sql_query": (data.get("sql") or "").strip(),
+            "explanation": _build_success_explanation(len(rows)),
+            "results": rows,
+            "row_count": len(rows),
             "status": "success",
+            "is_multi": False,
+        }
+
+    elif len(successful_tools) > 1:
+        sub_responses = []
+        for i, data in enumerate(successful_tools):
+            rows = make_json_serializable(data.get("results") or [])
+            if not isinstance(rows, list):
+                rows = [rows]
+            sub_responses.append({
+                "question": f"Query Result {i+1}",
+                "sql": (data.get("sql") or "").strip(),
+                "explanation": "Query executed successfully.",
+                "results": rows,
+                "row_count": len(rows),
+                "result_sentence": "",
+                "cache_references": [],
+                "status": "success",
+                "cache_doc_id": None
+            })
+        return {
+            "sql_query": "",
+            "explanation": last_ai_text or f"I successfully ran {len(successful_tools)} queries for you. Here are the results:",
+            "results": [],
+            "row_count": 0,
+            "status": "success",
+            "is_multi": True,
+            "sub_responses": sub_responses
         }
 
     if had_tool_attempt:

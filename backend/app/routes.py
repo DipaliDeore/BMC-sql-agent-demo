@@ -287,105 +287,7 @@ def _merge_explanation_with_narrative(llm_explanation: str, narrative: str | Non
     return f"{narrative}\n\n{llm}"
 
 
-def _process_sub_query_sync(
-    sub_question: str,
-    i: int,
-    total_queries: int,
-    query_id: str,
-    schema: str,
-    loop=None,
-) -> dict:
-    print(f"[Multi-Query] [{query_id}] Processing sub-query {i + 1}/{total_queries}: {sub_question}")
 
-    if is_dangerous_input(sub_question):
-        print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} BLOCKED — dangerous input")
-        return {
-            "question": sub_question, "sql": "", "explanation": "Only read-only queries are allowed. Data modification is not permitted.",
-            "results": [], "row_count": 0, "result_sentence": "", "cache_references": [], "status": "error"
-        }
-
-    try:
-        similar = find_similar_queries(sub_question, top_k=REFERENCE_TOP_K)
-        filtered = [ex for ex in similar if _is_safe_reference(ex)]
-
-        tool_result = _run_sql_agent(
-            sub_question,
-            schema,
-            filtered or None,
-            thread_id=f"{query_id}-sub-{i}",
-        )
-
-        if tool_result["status"] == "not_related":
-            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} — NOT_RELATED")
-            return {
-                "question": sub_question,
-                "sql": "",
-                "explanation": tool_result["explanation"],
-                "results": [],
-                "row_count": 0,
-                "result_sentence": "",
-                "cache_references": filtered,
-                "status": "error",
-            }
-
-        if tool_result["status"] in ("db_error", "sql_error", "rate_limited"):
-            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} stopped: {tool_result['status']}")
-            return {
-                "question": sub_question,
-                "sql": "",
-                "explanation": tool_result["explanation"],
-                "results": [],
-                "row_count": 0,
-                "result_sentence": "",
-                "cache_references": filtered,
-                "status": "error",
-            }
-
-        sub_result = tool_result["results"]
-        sub_safe_sql = tool_result["sql_query"]
-        sub_explanation = tool_result["explanation"]
-        sub_row_count = len(sub_result)
-
-        sub_cache_doc_id: str | None = None
-        if sub_result:
-            sub_cache_doc_id = str(uuid.uuid4())
-            store_fn = functools.partial(
-                store_query, sub_question, sub_safe_sql, sub_cache_doc_id
-            )
-            if loop:
-                loop.call_soon_threadsafe(
-                    lambda sf=store_fn: loop.run_in_executor(None, sf)
-                )
-                print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} scheduled for background storage")
-            else:
-                store_fn()
-
-        sub_sentence = _build_result_sentence(sub_result, None)
-
-        sub_narrative = _build_results_narrative(sub_result)
-        sub_explanation = _merge_explanation_with_narrative(sub_explanation, sub_narrative)
-
-        print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} SUCCESS — {sub_row_count} rows returned")
-        out_sub = {
-            "question": sub_question,
-            "sql": sub_safe_sql,
-            "explanation": sub_explanation,
-            "results": sub_result,
-            "row_count": sub_row_count,
-            "result_sentence": sub_sentence or "",
-            "cache_references": filtered,
-            "status": "success",
-        }
-        if sub_cache_doc_id:
-            out_sub["cache_doc_id"] = sub_cache_doc_id
-        return out_sub
-
-    except Exception as e:
-        print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} unexpected error: {e}")
-        return {
-            "question": sub_question, "sql": "", "explanation": "An unexpected error occurred. Please try rephrasing.",
-            "results": [], "row_count": 0, "result_sentence": "", "cache_references": [], "status": "error"
-        }
 
 
 # ── Endpoint 1: Test Database Connection ──────────────────────────────────────
@@ -448,27 +350,13 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
 
     pref = (body.preference or "AUTO").upper()
     loop = asyncio.get_running_loop()
-    similar_examples_raw = []
 
-    if pref == "SINGLE":
-        # Decision already made — skip LLM analysis entirely.
-        analysis = {"type": "SINGLE", "queries": [body.question]}
-        similar_examples_raw = await loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K)
-    elif pref == "MULTI":
-        analysis = await loop.run_in_executor(None, analyze_query, body.question, schema, pref)
-    elif config.SKIP_MULTI_QUERY_LLM:
-        analysis = {"type": "SINGLE", "queries": [body.question]}
-        similar_examples_raw = await loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K)
-    else:
-        # AUTO with multi-indicators OR explicit MULTI pref — run LLM analysis.
-        analysis, similar_examples_raw = await asyncio.gather(
-            loop.run_in_executor(None, analyze_query, body.question, schema, pref),
-            loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K),
-        )
+    # The LangGraph Agent now natively handles MULTI query parallelization.
+    # Therefore, we always bypass analyze_query and use the unified pipeline.
+    analysis = {"type": "SINGLE", "queries": [body.question]}
+    similar_examples_raw = await loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K)
 
-
-
-    # ── SINGLE question path — identical behavior to the original pipeline ───────
+    # ── Unified path (SINGLE logic native multi tool-calling) ───────
     if analysis["type"] == "SINGLE":
         # Security: block destructive intent before any Gemini call (single input only).
         if is_dangerous_input(body.question):
@@ -540,6 +428,18 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 conversation_id=conversation_id,
             )
 
+        if tool_result.get("is_multi"):
+            return QueryResponse(
+                question=body.question,
+                sql="",
+                results=[],
+                explanation=tool_result["explanation"],
+                row_count=0,
+                conversation_id=conversation_id,
+                is_multi=True,
+                sub_responses=tool_result.get("sub_responses", []),
+            )
+
         result = tool_result["results"]
         safe_sql = tool_result["sql_query"]
         explanation = tool_result["explanation"]
@@ -578,45 +478,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             cache_doc_id=cache_doc_id,
         )
 
-    # ── MULTI question path — run each sub-question through a slim pipeline ───────
-    elif analysis["type"] == "MULTI":
-        query_id = str(uuid.uuid4())
-        print(f"[Multi-Query] START query_id={query_id}")
-        queries = analysis['queries']
-        print(f"[Multi-Query] Sub-queries: {queries}")
 
-        tasks = [
-            loop.run_in_executor(None, _process_sub_query_sync, sub_question, i, len(queries), query_id, schema, loop)
-            for i, sub_question in enumerate(queries)
-        ]
-        sub_responses = await asyncio.gather(*tasks)
-
-        success_count = sum(1 for r in sub_responses if r["status"] == "success")
-        print(
-            f"[Multi-Query] DONE query_id={query_id} | "
-            f"{success_count}/{len(sub_responses)} succeeded"
-        )
-
-        return QueryResponse(
-            question=body.question,
-            sql="",
-            results=[],
-            explanation=f"{success_count} of {len(sub_responses)} queries completed successfully.",
-            row_count=0,
-            conversation_id=conversation_id,
-            is_multi=True,
-            sub_responses=sub_responses,
-        )
-
-    # Should not reach — analyzer always returns SINGLE or MULTI
-    return QueryResponse(
-        question=body.question,
-        sql="",
-        results=[],
-        explanation="Hmm, something went wrong analyzing your question. Please try again.",
-        row_count=0,
-        conversation_id=conversation_id,
-    )
 
 
 @router.post("/query", response_model=QueryResponse)
