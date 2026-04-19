@@ -112,30 +112,56 @@ def execute_query(sql_query: str):
 def get_database_schema() -> str:
     """
     Return a plain-text description of the database schema.
-
-    This schema is passed to the AI (Gemini) so it understands the table
-    structure and can generate accurate SQL queries.
+    
+    This schema is dynamically fetched from the database, including tables,
+    columns, and foreign key relationships.
 
     Returns:
         str: A formatted string describing all tables, columns, and relationships.
     """
-    schema = """
-Table: customers
-Columns: customer_id, name, email, city, created_at
+    connection = None
+    cursor = None
+    schema_lines = []
 
-Table: products
-Columns: product_id, product_name, category, price
-
-Table: orders
-Columns: order_id, customer_id, order_date, total_amount, order_status
-
-Table: order_items
-Columns: order_item_id, order_id, product_id, quantity
-
-Relationships:
-customers.customer_id → orders.customer_id
-orders.order_id       → order_items.order_id
-products.product_id   → order_items.product_id
-""".strip()
-
-    return schema
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        
+        # 1. Fetch tables
+        cursor.execute("SHOW TABLES")
+        tables = [list(row.values())[0] for row in cursor.fetchall()]
+        
+        # 2. Fetch columns for each table
+        for table in tables:
+            cursor.execute(f"DESCRIBE `{table}`")
+            columns = [row['Field'] for row in cursor.fetchall()]
+            schema_lines.append(f"Table: {table}")
+            schema_lines.append(f"Columns: {', '.join(columns)}\n")
+            
+        # 3. Fetch foreign key relationships
+        cursor.execute("""
+            SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+            WHERE REFERENCED_TABLE_SCHEMA = %s AND REFERENCED_TABLE_NAME IS NOT NULL
+        """, (config.DB_NAME,))
+        fks = cursor.fetchall()
+        
+        if fks:
+            schema_lines.append("Relationships:")
+            for fk in fks:
+                schema_lines.append(
+                    f"{fk['TABLE_NAME']}.{fk['COLUMN_NAME']} \u2192 {fk['REFERENCED_TABLE_NAME']}.{fk['REFERENCED_COLUMN_NAME']}"
+                )
+                
+        return "\n".join(schema_lines).strip()
+        
+    except Exception as e:
+        print(f"Warning: Failed to fetch dynamic schema: {e}")
+        # Fallback to generic message or fail gracefully if the database isn't working
+        return "Schema unavailable. Database connection failed."
+        
+    finally:
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()

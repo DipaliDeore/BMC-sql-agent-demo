@@ -38,8 +38,6 @@ function fromApiMessage(row) {
     error: p.error ?? false,
     errorText: p.errorText,
     cache_doc_id: p.cache_doc_id ?? null,
-    feedback: p.feedback ?? null,
-    feedbacks: p.feedbacks ?? null,
   };
 }
 
@@ -87,8 +85,6 @@ export default function ChatPage({ theme, toggleTheme }) {
       cancelled = true;
     };
   }, []);
-
-  const activeTitle = chats.find((c) => c.id === activeChatId)?.title || "";
 
   async function handleNewChat() {
     try {
@@ -176,8 +172,6 @@ export default function ChatPage({ theme, toggleTheme }) {
         is_ambiguous: data.is_ambiguous ?? false,
         original_question: question,
         cache_doc_id: data.cache_doc_id ?? null,
-        feedback: null,
-        feedbacks: null,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -198,31 +192,12 @@ export default function ChatPage({ theme, toggleTheme }) {
   if (initError && !activeChatId) {
     return (
       <div className="app-shell" style={{ alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <div
-          style={{
-            maxWidth: 420,
-            padding: 24,
-            borderRadius: 12,
-            border: "1px solid var(--border)",
-            background: "var(--surface-1)",
-            color: "var(--text)",
-          }}
-        >
-          <p style={{ marginBottom: 12, fontWeight: 600 }}>Could not load chats</p>
-          <p style={{ fontSize: 14, color: "var(--text-muted)", marginBottom: 16 }}>{initError}</p>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            style={{
-              padding: "10px 16px",
-              borderRadius: 8,
-              border: "none",
-              background: "var(--accent)",
-              color: "var(--accent-fg)",
-              fontWeight: 600,
-              cursor: "pointer",
-            }}
-          >
+        <div className="ui-init-card msg-animate">
+          <p style={{ marginBottom: 10, fontWeight: 600, fontSize: "16px" }}>Could not load chats</p>
+          <p style={{ fontSize: "14px", color: "var(--text-muted)", marginBottom: 18, lineHeight: 1.5 }}>
+            {initError}
+          </p>
+          <button type="button" className="ui-btn-primary" onClick={() => window.location.reload()}>
             Retry
           </button>
         </div>
@@ -232,25 +207,7 @@ export default function ChatPage({ theme, toggleTheme }) {
 
   return (
     <div className="app-shell">
-      {initError && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            zIndex: 50,
-            padding: "10px 16px",
-            background: "var(--error-bg)",
-            color: "var(--error)",
-            fontSize: 13,
-            textAlign: "center",
-            borderBottom: "1px solid var(--border)",
-          }}
-        >
-          {initError}
-        </div>
-      )}
+      {initError && <div className="ui-toast-error">{initError}</div>}
       <Sidebar
         chats={chats}
         activeChatId={activeChatId}
@@ -262,8 +219,6 @@ export default function ChatPage({ theme, toggleTheme }) {
       <ChatWindow
         theme={theme}
         toggleTheme={toggleTheme}
-        chatTitle={activeTitle}
-        conversationId={activeChatId}
         messages={messages}
         loading={loading}
         onSend={handleSend}

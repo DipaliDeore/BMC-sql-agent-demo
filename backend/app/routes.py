@@ -14,8 +14,6 @@ Endpoints:
 import asyncio
 import functools
 import uuid
-from typing import Literal
-
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
 from langsmith import traceable
@@ -30,7 +28,6 @@ from app.search import REFERENCE_TOP_K, find_similar_queries
 from app.agent_executor import generate_and_execute_with_tools
 from app.store import store_query
 from app import chat_store
-from app import feedback_ops, feedback_log
 
 
 # ── Create API Router ─────────────────────────────────────────────────────────
@@ -89,46 +86,10 @@ class QueryResponse(BaseModel):
     # Multi-query responses (optional; defaults keep single-query clients unchanged)
     is_multi: bool = False
     sub_responses: list[dict] = Field(default_factory=list)
-    # OpenSearch document id for the (question, SQL) pair stored after success — for feedback.
+    # OpenSearch document id for the (question, SQL) pair stored after success (semantic cache).
     cache_doc_id: str | None = None
-    # DB id of the assistant row saved for this response (client sends back for POST /api/feedback).
+    # DB id of the assistant row saved for this response.
     assistant_message_id: str | None = None
-
-
-def _feedback_already_submitted(payload: dict, sub_index: int | None) -> bool:
-    """True if this message already has feedback for the same scope (whole message or sub_index)."""
-    hist: list = []
-    raw_hist = payload.get("feedbacks")
-    if isinstance(raw_hist, list):
-        hist.extend(raw_hist)
-    legacy = payload.get("feedback")
-    if isinstance(legacy, dict) and legacy.get("vote") in ("up", "down"):
-        hist.append(legacy)
-    for item in hist:
-        if not isinstance(item, dict) or item.get("vote") not in ("up", "down"):
-            continue
-        isub = item.get("sub_index")
-        if isub is None and sub_index is None:
-            return True
-        if isub is not None and sub_index is not None:
-            try:
-                if int(isub) == int(sub_index):
-                    return True
-            except (TypeError, ValueError):
-                continue
-    return False
-
-
-class FeedbackRequest(BaseModel):
-    """Explicit thumbs up/down on an assistant message."""
-
-    conversation_id: str = Field(..., min_length=1)
-    message_id: str = Field(..., min_length=1)
-    vote: Literal["up", "down"]
-    failure_kind: Literal["sql", "interpretation", "other"] | None = None
-    reason: str | None = Field(default=None, max_length=2000)
-    # For is_multi responses: which sub-query block (0-based) the feedback refers to.
-    sub_index: int | None = Field(default=None, ge=0)
 
 
 def _assistant_chat_content(resp: QueryResponse) -> str:
@@ -287,105 +248,7 @@ def _merge_explanation_with_narrative(llm_explanation: str, narrative: str | Non
     return f"{narrative}\n\n{llm}"
 
 
-def _process_sub_query_sync(
-    sub_question: str,
-    i: int,
-    total_queries: int,
-    query_id: str,
-    schema: str,
-    loop=None,
-) -> dict:
-    print(f"[Multi-Query] [{query_id}] Processing sub-query {i + 1}/{total_queries}: {sub_question}")
 
-    if is_dangerous_input(sub_question):
-        print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} BLOCKED — dangerous input")
-        return {
-            "question": sub_question, "sql": "", "explanation": "Only read-only queries are allowed. Data modification is not permitted.",
-            "results": [], "row_count": 0, "result_sentence": "", "cache_references": [], "status": "error"
-        }
-
-    try:
-        similar = find_similar_queries(sub_question, top_k=REFERENCE_TOP_K)
-        filtered = [ex for ex in similar if _is_safe_reference(ex)]
-
-        tool_result = _run_sql_agent(
-            sub_question,
-            schema,
-            filtered or None,
-            thread_id=f"{query_id}-sub-{i}",
-        )
-
-        if tool_result["status"] == "not_related":
-            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} — NOT_RELATED")
-            return {
-                "question": sub_question,
-                "sql": "",
-                "explanation": tool_result["explanation"],
-                "results": [],
-                "row_count": 0,
-                "result_sentence": "",
-                "cache_references": filtered,
-                "status": "error",
-            }
-
-        if tool_result["status"] in ("db_error", "sql_error", "rate_limited"):
-            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} stopped: {tool_result['status']}")
-            return {
-                "question": sub_question,
-                "sql": "",
-                "explanation": tool_result["explanation"],
-                "results": [],
-                "row_count": 0,
-                "result_sentence": "",
-                "cache_references": filtered,
-                "status": "error",
-            }
-
-        sub_result = tool_result["results"]
-        sub_safe_sql = tool_result["sql_query"]
-        sub_explanation = tool_result["explanation"]
-        sub_row_count = len(sub_result)
-
-        sub_cache_doc_id: str | None = None
-        if sub_result:
-            sub_cache_doc_id = str(uuid.uuid4())
-            store_fn = functools.partial(
-                store_query, sub_question, sub_safe_sql, sub_cache_doc_id
-            )
-            if loop:
-                loop.call_soon_threadsafe(
-                    lambda sf=store_fn: loop.run_in_executor(None, sf)
-                )
-                print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} scheduled for background storage")
-            else:
-                store_fn()
-
-        sub_sentence = _build_result_sentence(sub_result, None)
-
-        sub_narrative = _build_results_narrative(sub_result)
-        sub_explanation = _merge_explanation_with_narrative(sub_explanation, sub_narrative)
-
-        print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} SUCCESS — {sub_row_count} rows returned")
-        out_sub = {
-            "question": sub_question,
-            "sql": sub_safe_sql,
-            "explanation": sub_explanation,
-            "results": sub_result,
-            "row_count": sub_row_count,
-            "result_sentence": sub_sentence or "",
-            "cache_references": filtered,
-            "status": "success",
-        }
-        if sub_cache_doc_id:
-            out_sub["cache_doc_id"] = sub_cache_doc_id
-        return out_sub
-
-    except Exception as e:
-        print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} unexpected error: {e}")
-        return {
-            "question": sub_question, "sql": "", "explanation": "An unexpected error occurred. Please try rephrasing.",
-            "results": [], "row_count": 0, "result_sentence": "", "cache_references": [], "status": "error"
-        }
 
 
 # ── Endpoint 1: Test Database Connection ──────────────────────────────────────
@@ -448,27 +311,13 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
 
     pref = (body.preference or "AUTO").upper()
     loop = asyncio.get_running_loop()
-    similar_examples_raw = []
 
-    if pref == "SINGLE":
-        # Decision already made — skip LLM analysis entirely.
-        analysis = {"type": "SINGLE", "queries": [body.question]}
-        similar_examples_raw = await loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K)
-    elif pref == "MULTI":
-        analysis = await loop.run_in_executor(None, analyze_query, body.question, schema, pref)
-    elif config.SKIP_MULTI_QUERY_LLM:
-        analysis = {"type": "SINGLE", "queries": [body.question]}
-        similar_examples_raw = await loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K)
-    else:
-        # AUTO with multi-indicators OR explicit MULTI pref — run LLM analysis.
-        analysis, similar_examples_raw = await asyncio.gather(
-            loop.run_in_executor(None, analyze_query, body.question, schema, pref),
-            loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K),
-        )
+    # The LangGraph Agent now natively handles MULTI query parallelization.
+    # Therefore, we always bypass analyze_query and use the unified pipeline.
+    analysis = {"type": "SINGLE", "queries": [body.question]}
+    similar_examples_raw = await loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K)
 
-
-
-    # ── SINGLE question path — identical behavior to the original pipeline ───────
+    # ── Unified path (SINGLE logic native multi tool-calling) ───────
     if analysis["type"] == "SINGLE":
         # Security: block destructive intent before any Gemini call (single input only).
         if is_dangerous_input(body.question):
@@ -540,6 +389,18 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 conversation_id=conversation_id,
             )
 
+        if tool_result.get("is_multi"):
+            return QueryResponse(
+                question=body.question,
+                sql="",
+                results=[],
+                explanation=tool_result["explanation"],
+                row_count=0,
+                conversation_id=conversation_id,
+                is_multi=True,
+                sub_responses=tool_result.get("sub_responses", []),
+            )
+
         result = tool_result["results"]
         safe_sql = tool_result["sql_query"]
         explanation = tool_result["explanation"]
@@ -555,7 +416,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 conversation_id=conversation_id,
             )
 
-        # Fire-and-forget: store in OpenSearch after response — doc id is known up front for feedback.
+        # Fire-and-forget: store in OpenSearch after response — doc id is known up front for cache_doc_id.
         cache_doc_id = str(uuid.uuid4())
         loop.run_in_executor(
             None,
@@ -578,45 +439,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             cache_doc_id=cache_doc_id,
         )
 
-    # ── MULTI question path — run each sub-question through a slim pipeline ───────
-    elif analysis["type"] == "MULTI":
-        query_id = str(uuid.uuid4())
-        print(f"[Multi-Query] START query_id={query_id}")
-        queries = analysis['queries']
-        print(f"[Multi-Query] Sub-queries: {queries}")
 
-        tasks = [
-            loop.run_in_executor(None, _process_sub_query_sync, sub_question, i, len(queries), query_id, schema, loop)
-            for i, sub_question in enumerate(queries)
-        ]
-        sub_responses = await asyncio.gather(*tasks)
-
-        success_count = sum(1 for r in sub_responses if r["status"] == "success")
-        print(
-            f"[Multi-Query] DONE query_id={query_id} | "
-            f"{success_count}/{len(sub_responses)} succeeded"
-        )
-
-        return QueryResponse(
-            question=body.question,
-            sql="",
-            results=[],
-            explanation=f"{success_count} of {len(sub_responses)} queries completed successfully.",
-            row_count=0,
-            conversation_id=conversation_id,
-            is_multi=True,
-            sub_responses=sub_responses,
-        )
-
-    # Should not reach — analyzer always returns SINGLE or MULTI
-    return QueryResponse(
-        question=body.question,
-        sql="",
-        results=[],
-        explanation="Hmm, something went wrong analyzing your question. Please try again.",
-        row_count=0,
-        conversation_id=conversation_id,
-    )
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -679,109 +502,6 @@ async def handle_query(body: QueryRequest):
         _assistant_payload_from_response(response),
     )
     return response.model_copy(update={"assistant_message_id": str(row["id"])})
-
-
-@router.post("/feedback")
-async def post_feedback(body: FeedbackRequest):
-    """
-    Thumbs up/down on an assistant turn. Updates OpenSearch cache doc when cache_doc_id
-    is present on the stored message payload; otherwise logs only (neutral / no vector change).
-    No feedback (client sends nothing) is handled by omission — this endpoint is not called.
-    """
-    try:
-        mid = int(body.message_id.strip())
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="message_id must be a numeric id")
-
-    if chat_store.get_chat(body.conversation_id) is None:
-        raise HTTPException(status_code=404, detail="Chat not found")
-
-    msg = chat_store.get_message(body.conversation_id.strip(), mid)
-    if msg is None:
-        raise HTTPException(status_code=404, detail="Message not found")
-    if (msg.get("role") or "") != "assistant":
-        raise HTTPException(status_code=400, detail="Feedback applies only to assistant messages")
-
-    payload = msg.get("payload") or {}
-    if not isinstance(payload, dict):
-        payload = {}
-
-    if _feedback_already_submitted(payload, body.sub_index):
-        return {
-            "ok": True,
-            "duplicate": True,
-            "vector_updated": False,
-            "cache_doc_id": None,
-        }
-
-    cache_doc_id: str | None = None
-    if body.sub_index is not None:
-        subs = payload.get("sub_responses") or []
-        if body.sub_index < len(subs) and isinstance(subs[body.sub_index], dict):
-            cid = (subs[body.sub_index].get("cache_doc_id") or "").strip()
-            cache_doc_id = cid or None
-    else:
-        cid = (payload.get("cache_doc_id") or "").strip()
-        cache_doc_id = cid or None
-
-    vector_updated = False
-    loop = asyncio.get_running_loop()
-    if cache_doc_id:
-        if body.vote == "up":
-            vector_updated = await loop.run_in_executor(
-                None, feedback_ops.apply_positive_feedback, cache_doc_id
-            )
-        else:
-            vector_updated = await loop.run_in_executor(
-                None, feedback_ops.apply_negative_feedback, cache_doc_id
-            )
-
-    reason_trunc = (body.reason or "").strip()[:500] or None
-    feedback_log.log_feedback_event(
-        {
-            "vote": body.vote,
-            "conversation_id": body.conversation_id.strip(),
-            "message_id": mid,
-            "sub_index": body.sub_index,
-            "failure_kind": body.failure_kind,
-            "reason": reason_trunc,
-            "cache_doc_id": cache_doc_id,
-            "vector_updated": vector_updated,
-        }
-    )
-
-    if body.vote == "up" and vector_updated:
-        feedback_log.log_metric_event(
-            "explicit_positive_feedback",
-            {"conversation_id": body.conversation_id.strip(), "message_id": mid},
-        )
-
-    feedbacks: list = []
-    if isinstance(payload.get("feedbacks"), list):
-        feedbacks = [x for x in payload["feedbacks"] if isinstance(x, dict)]
-    elif isinstance(payload.get("feedback"), dict) and payload["feedback"].get("vote") in (
-        "up",
-        "down",
-    ):
-        feedbacks = [payload["feedback"]]
-    entry = {
-        "vote": body.vote,
-        "failure_kind": body.failure_kind,
-        "sub_index": body.sub_index,
-    }
-    feedbacks.append(entry)
-    chat_store.patch_message_payload(
-        body.conversation_id.strip(),
-        mid,
-        {"feedbacks": feedbacks, "feedback": entry},
-    )
-
-    return {
-        "ok": True,
-        "duplicate": False,
-        "vector_updated": vector_updated,
-        "cache_doc_id": cache_doc_id,
-    }
 
 
 @router.get("/chats")
