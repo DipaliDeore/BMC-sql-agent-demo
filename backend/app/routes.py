@@ -12,23 +12,25 @@ Endpoints:
 """
 
 import asyncio
-import re
+import functools
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from langsmith import traceable
 
 from app import config
 from app.fast_sql_pipeline import run_fast_sql_pipeline
 from app.database import execute_query, get_database_schema
 from app.query_analyzer import analyze_query
-from app.sql_generator import generate_sql_and_explanation, is_dangerous_input
+from app.sql_generator import is_dangerous_input
 from app.query_validator import validate_sql, QueryValidationError
 from app.search import REFERENCE_TOP_K, find_similar_queries
-from app.sql_retry_engine import execute_with_retry
 from app.agent_executor import generate_and_execute_with_tools
 from app.store import store_query
+from app import chat_store
+from app import feedback_ops, feedback_log
 
 
 # ── Create API Router ─────────────────────────────────────────────────────────
@@ -37,47 +39,38 @@ from app.store import store_query
 router = APIRouter(prefix="/api", tags=["SQL Agent"])
 
 
-# ── Fast-path helpers (zero LLM calls) ───────────────────────────────────────
-
-_GREETING_PHRASES = frozenset({
-    "hi", "hello", "hey", "howdy", "hiya", "sup", "greetings",
-    "good morning", "good afternoon", "good evening", "good day",
-    "how are you", "how are you doing", "how is it going",
-    "hi there", "hello there", "hey there", "what's up", "whats up",
-    "yo", "namaste", "helo", "hii", "hiii",
-})
-
-
-def _is_pure_greeting(question: str) -> bool:
-    """Return True for pure greetings/small-talk — no DB question present."""
-    q = re.sub(r"[^\w\s]", "", question.strip().lower())
-    q = " ".join(q.split())
-    return q in _GREETING_PHRASES
-
-
-# Indicators that strongly suggest a multi-part question.
-_MULTI_INDICATORS = (
-    " and also ", " and also show ", " additionally ", " also show ",
-    " also find ", " also give ", " as well as ", " separately ",
-    " in addition", " furthermore", " moreover", " along with ",
-    "1.", "2.", "1)", "2)",
-)
-
-
-def _is_clearly_single(question: str) -> bool:
-    """Return True when no multi-query indicators are present — safe to skip LLM analysis."""
-    q = question.lower()
-    return not any(ind in q for ind in _MULTI_INDICATORS)
-
-
 # ── Request / Response Models ─────────────────────────────────────────────────
+
+class ChatMessageItem(BaseModel):
+    """One turn for client-synced conversation history (optional)."""
+
+    role: str
+    content: str
+
+    @field_validator("role")
+    @classmethod
+    def _role_ok(cls, v: str) -> str:
+        if v not in ("user", "assistant"):
+            raise ValueError('role must be "user" or "assistant"')
+        return v
+
 
 class QueryRequest(BaseModel):
     """Request body for the POST /api/query endpoint."""
     question: str  # The user's natural language question
-    # Stable id per browser session so LangGraph MemorySaver can recall prior turns
+    # Stable id per chat; LangGraph thread + Postgres checkpoints recall prior turns
     conversation_id: str | None = None
     preference: str | None = "AUTO"  # "AUTO", "SINGLE", "MULTI"
+    # Optional: full transcript from the client (stored server-side is authoritative)
+    messages: list[ChatMessageItem] | None = None
+
+
+class CreateChatBody(BaseModel):
+    title: str | None = None
+
+
+class RenameChatBody(BaseModel):
+    title: str
 
 
 class QueryResponse(BaseModel):
@@ -87,9 +80,8 @@ class QueryResponse(BaseModel):
     results: list[dict]  # Rows returned from the database
     explanation: str     # Plain-English explanation of the SQL query
     row_count: int       # Number of rows returned
-    result_summary: str | None = None  # Deprecated: use result_sentence for single-value
     result_sentence: str | None = None  # Natural language sentence for single value (e.g. "Total number of customers are 10")
-    # Optional debug info to show what Pinecone retrieval returned.
+    # Optional debug info to show what semantic cache retrieval returned.
     # This does not affect the main logic.
     cache_references: list[dict] | None = None
     conversation_id: str | None = None  # Echo effective thread id — reuse on later requests
@@ -97,6 +89,68 @@ class QueryResponse(BaseModel):
     # Multi-query responses (optional; defaults keep single-query clients unchanged)
     is_multi: bool = False
     sub_responses: list[dict] = Field(default_factory=list)
+    # OpenSearch document id for the (question, SQL) pair stored after success — for feedback.
+    cache_doc_id: str | None = None
+    # DB id of the assistant row saved for this response (client sends back for POST /api/feedback).
+    assistant_message_id: str | None = None
+
+
+def _feedback_already_submitted(payload: dict, sub_index: int | None) -> bool:
+    """True if this message already has feedback for the same scope (whole message or sub_index)."""
+    hist: list = []
+    raw_hist = payload.get("feedbacks")
+    if isinstance(raw_hist, list):
+        hist.extend(raw_hist)
+    legacy = payload.get("feedback")
+    if isinstance(legacy, dict) and legacy.get("vote") in ("up", "down"):
+        hist.append(legacy)
+    for item in hist:
+        if not isinstance(item, dict) or item.get("vote") not in ("up", "down"):
+            continue
+        isub = item.get("sub_index")
+        if isub is None and sub_index is None:
+            return True
+        if isub is not None and sub_index is not None:
+            try:
+                if int(isub) == int(sub_index):
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
+class FeedbackRequest(BaseModel):
+    """Explicit thumbs up/down on an assistant message."""
+
+    conversation_id: str = Field(..., min_length=1)
+    message_id: str = Field(..., min_length=1)
+    vote: Literal["up", "down"]
+    failure_kind: Literal["sql", "interpretation", "other"] | None = None
+    reason: str | None = Field(default=None, max_length=2000)
+    # For is_multi responses: which sub-query block (0-based) the feedback refers to.
+    sub_index: int | None = Field(default=None, ge=0)
+
+
+def _assistant_chat_content(resp: QueryResponse) -> str:
+    ex = (resp.explanation or "").strip()
+    if ex:
+        return ex
+    return "Done."
+
+
+def _assistant_payload_from_response(resp: QueryResponse) -> dict:
+    return {
+        "sql": resp.sql,
+        "results": resp.results,
+        "explanation": resp.explanation,
+        "row_count": resp.row_count,
+        "result_sentence": resp.result_sentence,
+        "cache_references": resp.cache_references,
+        "is_multi": resp.is_multi,
+        "sub_responses": resp.sub_responses,
+        "is_ambiguous": resp.is_ambiguous,
+        "cache_doc_id": resp.cache_doc_id,
+    }
 
 
 def _run_sql_agent(
@@ -111,12 +165,14 @@ def _run_sql_agent(
         return run_fast_sql_pipeline(
             question, schema, references, thread_id=thread_id
         )
-    return generate_and_execute_with_tools(question, schema, references)
+    return generate_and_execute_with_tools(
+        question, schema, references, thread_id=thread_id
+    )
 
 
 def _is_safe_reference(ex: dict) -> bool:
     """
-    Return True if a Pinecone reference row has SQL that passes the same
+    Return True if a cache reference row has SQL that passes the same
     validator used for the main pipeline (SELECT-only, etc.).
     """
     try:
@@ -159,21 +215,6 @@ def _build_result_sentence(results: list[dict], answer_template: str | None = No
         except Exception:
             pass
     return f"The result is {formatted}."
-
-
-def _build_result_summary(results: list[dict]) -> str | None:
-    """Build summary for single-row multi-column (tabular case). Not used for single-value."""
-    if not results or len(results) != 1:
-        return None
-    row = results[0]
-    if not row or len(row) == 1:
-        return None  # Single value -> use result_sentence instead
-    parts = []
-    for key, val in row.items():
-        s = _format_single_value(val)
-        label = key.replace("SUM(", "").replace(")", "").replace("(", " ").strip() or key
-        parts.append(f"{label}: {s}")
-    return " · ".join(parts)
 
 
 # Plain-language phrases for common aggregate column names (demo schema)
@@ -246,7 +287,14 @@ def _merge_explanation_with_narrative(llm_explanation: str, narrative: str | Non
     return f"{narrative}\n\n{llm}"
 
 
-def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query_id: str, schema: str) -> dict:
+def _process_sub_query_sync(
+    sub_question: str,
+    i: int,
+    total_queries: int,
+    query_id: str,
+    schema: str,
+    loop=None,
+) -> dict:
     print(f"[Multi-Query] [{query_id}] Processing sub-query {i + 1}/{total_queries}: {sub_question}")
 
     if is_dangerous_input(sub_question):
@@ -280,8 +328,8 @@ def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query
                 "status": "error",
             }
 
-        if tool_result["status"] in ("db_error", "sql_error"):
-            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} failed: {tool_result['status']}")
+        if tool_result["status"] in ("db_error", "sql_error", "rate_limited"):
+            print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} stopped: {tool_result['status']}")
             return {
                 "question": sub_question,
                 "sql": "",
@@ -298,15 +346,19 @@ def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query
         sub_explanation = tool_result["explanation"]
         sub_row_count = len(sub_result)
 
+        sub_cache_doc_id: str | None = None
         if sub_result:
+            sub_cache_doc_id = str(uuid.uuid4())
+            store_fn = functools.partial(
+                store_query, sub_question, sub_safe_sql, sub_cache_doc_id
+            )
             if loop:
                 loop.call_soon_threadsafe(
-                    lambda: loop.run_in_executor(None, store_query, sub_question, sub_safe_sql)
+                    lambda sf=store_fn: loop.run_in_executor(None, sf)
                 )
                 print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} scheduled for background storage")
             else:
-                # Fallback if loop is missing
-                store_query(sub_question, sub_safe_sql)
+                store_fn()
 
         sub_sentence = _build_result_sentence(sub_result, None)
 
@@ -314,11 +366,19 @@ def _process_sub_query_sync(sub_question: str, i: int, total_queries: int, query
         sub_explanation = _merge_explanation_with_narrative(sub_explanation, sub_narrative)
 
         print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} SUCCESS — {sub_row_count} rows returned")
-        return {
-            "question": sub_question, "sql": sub_safe_sql, "explanation": sub_explanation,
-            "results": sub_result, "row_count": sub_row_count, "result_sentence": sub_sentence or "",
-            "cache_references": filtered, "status": "success"
+        out_sub = {
+            "question": sub_question,
+            "sql": sub_safe_sql,
+            "explanation": sub_explanation,
+            "results": sub_result,
+            "row_count": sub_row_count,
+            "result_sentence": sub_sentence or "",
+            "cache_references": filtered,
+            "status": "success",
         }
+        if sub_cache_doc_id:
+            out_sub["cache_doc_id"] = sub_cache_doc_id
+        return out_sub
 
     except Exception as e:
         print(f"[Multi-Query] [{query_id}] Sub-query {i + 1} unexpected error: {e}")
@@ -421,7 +481,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 conversation_id=conversation_id,
             )
 
-        # Semantic cache: Pinecone similarity for reference examples in the prompt.
+        # Semantic cache: OpenSearch similarity for reference examples in the prompt.
         # Results already fetched concurrently above — just filter for safety.
         filtered_examples: list[dict] = []
         for ex in similar_examples_raw:
@@ -433,11 +493,10 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             except QueryValidationError:
                 continue
 
-        # Tool calling — LLM generates SQL and executes via tool in one loop
-        tool_result = generate_and_execute_with_tools(
-            question=body.question,
-            schema=schema,
-            references=filtered_examples or None,
+        tool_result = _run_sql_agent(
+            body.question,
+            schema,
+            filtered_examples or None,
             thread_id=conversation_id,
         )
 
@@ -467,7 +526,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 sql="",
                 results=[],
                 row_count=0,
-                explanation="Sorry, could not generate a valid query. Please rephrasing.",
+                explanation="Sorry, could not generate a valid query. Please try rephrasing.",
                 conversation_id=conversation_id,
             )
 
@@ -496,9 +555,12 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 conversation_id=conversation_id,
             )
 
-        # Fire-and-forget: store in Pinecone after response — don't block the user.
-        # store_query does OpenAI embedding + Pinecone upsert (~5-8s) — not worth waiting for.
-        loop.run_in_executor(None, store_query, body.question, safe_sql)
+        # Fire-and-forget: store in OpenSearch after response — doc id is known up front for feedback.
+        cache_doc_id = str(uuid.uuid4())
+        loop.run_in_executor(
+            None,
+            functools.partial(store_query, body.question, safe_sql, cache_doc_id),
+        )
         row_count = len(result)
 
         narrative = _build_results_narrative(result)
@@ -511,9 +573,9 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             explanation=explanation,
             row_count=row_count,
             result_sentence=_build_result_sentence(result, answer_template),
-            result_summary=_build_result_summary(result),
             cache_references=filtered_examples or None,
             conversation_id=conversation_id,
+            cache_doc_id=cache_doc_id,
         )
 
     # ── MULTI question path — run each sub-question through a slim pipeline ───────
@@ -523,7 +585,6 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
         queries = analysis['queries']
         print(f"[Multi-Query] Sub-queries: {queries}")
 
-        loop = asyncio.get_running_loop()
         tasks = [
             loop.run_in_executor(None, _process_sub_query_sync, sub_question, i, len(queries), query_id, schema, loop)
             for i, sub_question in enumerate(queries)
@@ -590,4 +651,169 @@ async def handle_query(body: QueryRequest):
             conversation_id=conversation_id,
         )
 
-    return await _execute_nl_query(body, conversation_id)
+    # Client may send `messages` for sync; execution uses server store + LangGraph checkpoints.
+    _ = body.messages
+
+    chat_store.ensure_chat(conversation_id)
+    chat_store.maybe_set_title_from_first_question(
+        conversation_id, body.question.strip()
+    )
+    chat_store.add_message(conversation_id, "user", body.question.strip(), None)
+
+    try:
+        response = await _execute_nl_query(body, conversation_id)
+    except Exception as e:
+        err_text = (str(e) or "").strip() or "Something went wrong. Please try again."
+        chat_store.add_message(
+            conversation_id,
+            "assistant",
+            err_text,
+            {"error": True, "errorText": err_text},
+        )
+        raise
+
+    row = chat_store.add_message(
+        conversation_id,
+        "assistant",
+        _assistant_chat_content(response),
+        _assistant_payload_from_response(response),
+    )
+    return response.model_copy(update={"assistant_message_id": str(row["id"])})
+
+
+@router.post("/feedback")
+async def post_feedback(body: FeedbackRequest):
+    """
+    Thumbs up/down on an assistant turn. Updates OpenSearch cache doc when cache_doc_id
+    is present on the stored message payload; otherwise logs only (neutral / no vector change).
+    No feedback (client sends nothing) is handled by omission — this endpoint is not called.
+    """
+    try:
+        mid = int(body.message_id.strip())
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="message_id must be a numeric id")
+
+    if chat_store.get_chat(body.conversation_id) is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    msg = chat_store.get_message(body.conversation_id.strip(), mid)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if (msg.get("role") or "") != "assistant":
+        raise HTTPException(status_code=400, detail="Feedback applies only to assistant messages")
+
+    payload = msg.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if _feedback_already_submitted(payload, body.sub_index):
+        return {
+            "ok": True,
+            "duplicate": True,
+            "vector_updated": False,
+            "cache_doc_id": None,
+        }
+
+    cache_doc_id: str | None = None
+    if body.sub_index is not None:
+        subs = payload.get("sub_responses") or []
+        if body.sub_index < len(subs) and isinstance(subs[body.sub_index], dict):
+            cid = (subs[body.sub_index].get("cache_doc_id") or "").strip()
+            cache_doc_id = cid or None
+    else:
+        cid = (payload.get("cache_doc_id") or "").strip()
+        cache_doc_id = cid or None
+
+    vector_updated = False
+    loop = asyncio.get_running_loop()
+    if cache_doc_id:
+        if body.vote == "up":
+            vector_updated = await loop.run_in_executor(
+                None, feedback_ops.apply_positive_feedback, cache_doc_id
+            )
+        else:
+            vector_updated = await loop.run_in_executor(
+                None, feedback_ops.apply_negative_feedback, cache_doc_id
+            )
+
+    reason_trunc = (body.reason or "").strip()[:500] or None
+    feedback_log.log_feedback_event(
+        {
+            "vote": body.vote,
+            "conversation_id": body.conversation_id.strip(),
+            "message_id": mid,
+            "sub_index": body.sub_index,
+            "failure_kind": body.failure_kind,
+            "reason": reason_trunc,
+            "cache_doc_id": cache_doc_id,
+            "vector_updated": vector_updated,
+        }
+    )
+
+    if body.vote == "up" and vector_updated:
+        feedback_log.log_metric_event(
+            "explicit_positive_feedback",
+            {"conversation_id": body.conversation_id.strip(), "message_id": mid},
+        )
+
+    feedbacks: list = []
+    if isinstance(payload.get("feedbacks"), list):
+        feedbacks = [x for x in payload["feedbacks"] if isinstance(x, dict)]
+    elif isinstance(payload.get("feedback"), dict) and payload["feedback"].get("vote") in (
+        "up",
+        "down",
+    ):
+        feedbacks = [payload["feedback"]]
+    entry = {
+        "vote": body.vote,
+        "failure_kind": body.failure_kind,
+        "sub_index": body.sub_index,
+    }
+    feedbacks.append(entry)
+    chat_store.patch_message_payload(
+        body.conversation_id.strip(),
+        mid,
+        {"feedbacks": feedbacks, "feedback": entry},
+    )
+
+    return {
+        "ok": True,
+        "duplicate": False,
+        "vector_updated": vector_updated,
+        "cache_doc_id": cache_doc_id,
+    }
+
+
+@router.get("/chats")
+async def api_list_chats():
+    return {"chats": chat_store.list_chats()}
+
+
+@router.post("/chats")
+async def api_create_chat(body: CreateChatBody | None = None):
+    b = body if body is not None else CreateChatBody()
+    return chat_store.create_chat(b.title)
+
+
+@router.get("/chats/{chat_id}/messages")
+async def api_get_chat_messages(chat_id: str):
+    if chat_store.get_chat(chat_id) is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return {"messages": chat_store.list_messages(chat_id)}
+
+
+@router.patch("/chats/{chat_id}")
+async def api_rename_chat(chat_id: str, body: RenameChatBody):
+    if not chat_store.rename_chat(chat_id, body.title):
+        raise HTTPException(status_code=404, detail="Chat not found")
+    row = chat_store.get_chat(chat_id)
+    assert row is not None
+    return row
+
+
+@router.delete("/chats/{chat_id}")
+async def api_delete_chat(chat_id: str):
+    if chat_store.get_chat(chat_id) is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    chat_store.delete_chat(chat_id)
+    return {"ok": True}

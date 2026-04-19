@@ -7,11 +7,11 @@ from decimal import Decimal
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import create_react_agent
 
 from app.tools.sql_tools import run_sql_query
 from app import config
+from app.checkpointer import get_checkpointer
 from app.serialization import make_json_serializable
 
 
@@ -19,11 +19,10 @@ AVAILABLE_TOOLS = [run_sql_query]
 
 
 # ---------------------------------------------------------------------------
-# MODULE-LEVEL LLM + COMPILED AGENT (checkpointer lives for process lifetime)
+# MODULE-LEVEL LLM + COMPILED AGENT (shared Postgres or in-memory checkpointer)
 # ---------------------------------------------------------------------------
 _llm: ChatGoogleGenerativeAI | None = None
 _agent_app = None
-_checkpointer = InMemorySaver()
 
 
 def _get_llm() -> ChatGoogleGenerativeAI:
@@ -80,7 +79,7 @@ def _get_agent_app():
             _get_llm(),
             tools=AVAILABLE_TOOLS,
             prompt=RunnableLambda(_prepend_system),
-            checkpointer=_checkpointer,
+            checkpointer=get_checkpointer(),
             version="v2",
         )
     return _agent_app
@@ -117,14 +116,6 @@ def _build_success_explanation(row_count: int) -> str:
     Return a concise, human-friendly explanation without an extra LLM call.
     Saves ~15-20s by skipping the second agent iteration after tool success.
     """
-    if row_count == 0:
-        return "The query ran successfully but no matching records were found."
-    if row_count == 1:
-        return "Got it! Here's what I found for you."
-    return f"Here you go — found {row_count:,} records matching your query."
-
-
-def _build_success_explanation(row_count: int) -> str:
     if row_count == 0:
         return "The query ran successfully but no matching records were found."
     if row_count == 1:
@@ -200,8 +191,16 @@ def _summarize_from_messages(messages: list) -> dict:
                     "status": "db_error",
                 }
             if data.get("success") is True:
-                final_sql = (data.get("sql") or "").strip()
-                final_results = make_json_serializable(data.get("results") or [])
+                q = (data.get("sql") or "").strip()
+                if q:
+                    if final_sql:
+                        final_sql += "; " + q
+                    else:
+                        final_sql = q
+                
+                rows = make_json_serializable(data.get("results") or [])
+                if isinstance(rows, list):
+                    final_results.extend(rows)
         elif isinstance(msg, AIMessage):
             last_ai_text = extract_text(msg.content)
 
@@ -217,7 +216,7 @@ def _summarize_from_messages(messages: list) -> dict:
     if had_tool_attempt:
         return {
             "sql_query": "",
-            "explanation": "Sorry, could not generate a valid query. Please rephrasing.",
+            "explanation": "Sorry, could not generate a valid query. Please try rephrasing.",
             "results": [],
             "row_count": 0,
             "status": "sql_error",
@@ -260,15 +259,18 @@ def generate_and_execute_with_tools(
         )
     except Exception as e:
         error_str = str(e).lower()
-        if "429" in error_str or "resource_exhausted" in error_str or "quota" in error_str:
-            print("[AgentExecutor] Rate limit hit (429)")
+        # Explicit check for 429 / Quota / Resource Exhausted
+        if any(k in error_str for k in ("429", "resource_exhausted", "quota")):
+            print(f"[AgentExecutor] Quota limit hit: {error_str}")
             return {
                 "sql_query": "",
-                "explanation": "The AI service is temporarily rate-limited. Please try again shortly.",
+                "explanation": "The AI service quota has been reached (429 Resource Exhausted). Please wait a few minutes or try again later.",
                 "results": [],
                 "row_count": 0,
                 "status": "rate_limited",
             }
+        # Log and re-raise other unexpected errors
+        print(f"[AgentExecutor] Unexpected error: {error_str}")
         raise
 
     messages = result.get("messages") or []

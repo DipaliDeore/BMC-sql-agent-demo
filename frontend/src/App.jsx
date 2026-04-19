@@ -1,23 +1,41 @@
 /**
  * App.jsx - Application Root Component
  * --------------------------------------
- * Manages the dark/light theme state.
- * Passes theme and toggleTheme to ChatPage.
- * Sets data-theme for CSS variable tokens.
+ * Theme: light by default; persisted in localStorage.
  */
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import ChatPage from "./pages/ChatPage";
 
+const THEME_KEY = "bmcs-sql-agent-theme";
+
+function readStoredTheme() {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    if (v === "dark" || v === "light") return v;
+  } catch {
+    /* ignore */
+  }
+  return "dark";
+}
+
 export default function App() {
-  const [theme, setTheme] = useState("dark");
+  const [theme, setTheme] = useState(readStoredTheme);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      /* ignore */
+    }
+  }, [theme]);
 
   function toggleTheme() {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
   }
 
   return (
-    <div className="app-root" data-theme={theme}>
+    <div className="app-root theme-transition" data-theme={theme}>
       <ChatPage theme={theme} toggleTheme={toggleTheme} />
     </div>
   );

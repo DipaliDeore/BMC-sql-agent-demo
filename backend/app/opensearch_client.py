@@ -71,11 +71,31 @@ def get_opensearch_client() -> Optional[OpenSearch]:
                             }
                         },
                         "question": {"type": "text"},
-                        "sql": {"type": "text"}
+                        "sql": {"type": "text"},
+                        "positive_feedback_count": {"type": "integer"},
+                        "negative_feedback_count": {"type": "integer"},
+                        "trust_score": {"type": "float"},
+                        "suppressed": {"type": "boolean"},
                     }
                 }
             }
             client.indices.create(index=index_name, body=index_body)
+        else:
+            # Best-effort: add feedback fields on existing indices (dynamic mapping may already exist).
+            try:
+                client.indices.put_mapping(
+                    index=index_name,
+                    body={
+                        "properties": {
+                            "positive_feedback_count": {"type": "integer"},
+                            "negative_feedback_count": {"type": "integer"},
+                            "trust_score": {"type": "float"},
+                            "suppressed": {"type": "boolean"},
+                        }
+                    },
+                )
+            except Exception:
+                pass
 
         _opensearch_client = client
         return _opensearch_client

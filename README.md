@@ -21,7 +21,7 @@ Built with **FastAPI + LangChain + Google Gemini** on the backend and **React + 
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python, FastAPI, LangChain |
-| AI | Google Gemini (`gemini-1.5-flash`) |
+| AI | Google Gemini (`gemini-flash-latest`) |
 | Database | TiDB Cloud (MySQL-compatible) |
 | Frontend | React 18, Vite, Tailwind CSS |
 | HTTP Client | Axios |

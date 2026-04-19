@@ -1,151 +1,269 @@
 /**
- * Sidebar.jsx - Left Panel Component
+ * Sidebar.jsx — New chat + recent chats (ChatGPT-style)
  */
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 
-export default function Sidebar({ theme, toggleTheme, history, onSelect }) {
-  const isDark = theme === "dark";
+function formatChatTime(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
+const menuSurface = {
+  backgroundColor: "var(--surface-1)",
+  border: "1px solid var(--border)",
+  borderRadius: "8px",
+  boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+  minWidth: "140px",
+  padding: "4px 0",
+  zIndex: 30,
+};
+
+const menuItem = {
+  display: "block",
+  width: "100%",
+  padding: "8px 14px",
+  fontSize: "13px",
+  textAlign: "left",
+  border: "none",
+  background: "transparent",
+  color: "var(--text)",
+  cursor: "pointer",
+};
+
+export default function Sidebar({
+  chats,
+  activeChatId,
+  onNewChat,
+  onSelectChat,
+  onRenameChat,
+  onDeleteChat,
+}) {
+  const [hoveredRowId, setHoveredRowId] = useState(null);
+  const [menuOpenId, setMenuOpenId] = useState(null);
+
+  useEffect(() => {
+    if (menuOpenId == null) return;
+    const onDocMouseDown = (e) => {
+      const root = e.target.closest?.("[data-chat-menu-root]");
+      if (root && root.getAttribute("data-chat-menu-root") === menuOpenId) return;
+      setMenuOpenId(null);
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [menuOpenId]);
 
   return (
     <aside
       className="app-sidebar"
       style={{
-        width: "clamp(220px, 26%, 300px)",
+        width: "260px",
         flexShrink: 0,
-        backgroundColor: "var(--surface-1)",
+        backgroundColor: "var(--sidebar-bg)",
         borderRight: "1px solid var(--border)",
         color: "var(--text)",
         display: "flex",
         flexDirection: "column",
         height: "100%",
         overflow: "hidden",
-        boxShadow: "var(--shadow-sm)",
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: "12px",
-          padding: "18px 20px",
-          borderBottom: "1px solid var(--border-subtle)",
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <div
-            style={{
-              height: "3px",
-              width: "40px",
-              borderRadius: "2px",
-              background: "var(--header-accent)",
-              marginBottom: "10px",
-            }}
-          />
-          <h1
-            style={{
-              fontSize: "17px",
-              fontWeight: 700,
-              letterSpacing: "-0.02em",
-              margin: 0,
-              lineHeight: 1.2,
-            }}
-          >
-            SQL Agent
-          </h1>
-        </div>
+      <div style={{ padding: "16px 12px 8px" }}>
         <button
-          id="theme-toggle-btn"
           type="button"
-          onClick={toggleTheme}
-          aria-pressed={isDark}
-          aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
+          onClick={onNewChat}
           style={{
-            flexShrink: 0,
-            padding: "8px 14px",
-            fontSize: "12px",
-            fontWeight: 600,
-            border: "1px solid var(--border)",
-            borderRadius: "999px",
-            backgroundColor: "var(--surface-2)",
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+            padding: "10px 12px",
+            fontSize: "14px",
+            fontWeight: 500,
+            borderRadius: "8px",
+            border: "none",
+            backgroundColor: "transparent",
             color: "var(--text)",
             cursor: "pointer",
-            transition: "background-color 0.15s ease, border-color 0.15s ease",
+            textAlign: "left",
+            transition: "background-color 0.15s ease",
           }}
+          onMouseOver={(e) => (e.currentTarget.style.backgroundColor = "var(--surface-1)")}
+          onMouseOut={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
         >
-          {isDark ? "Light" : "Dark"}
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          New chat
         </button>
       </div>
 
-      <div
-        style={{
-          padding: "14px 20px 8px",
-          fontSize: "11px",
-          fontWeight: 700,
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
-          color: "var(--text-muted)",
-        }}
-      >
-        Query history
-      </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "0 12px" }}>
+        <div style={{ marginTop: "24px", marginBottom: "16px" }}>
+          <div style={{ padding: "0 12px 8px", fontSize: "12px", fontWeight: 600, color: "var(--text-muted)" }}>
+            Recents
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+            {chats.map((c) => {
+              const active = c.id === activeChatId;
+              const showActions = hoveredRowId === c.id || menuOpenId === c.id;
+              const menuOpen = menuOpenId === c.id;
+              const title = c.title || "New chat";
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "4px 12px 16px" }}>
-        {history.length === 0 ? (
-          <p
-            style={{
-              padding: "24px 12px",
-              fontSize: "13px",
-              color: "var(--text-muted)",
-              textAlign: "center",
-              lineHeight: 1.5,
-            }}
-          >
-            Your questions will appear here so you can rerun them quickly.
-          </p>
-        ) : (
-          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-            {history.map((item, index) => (
-              <li key={`${item}-${index}`}>
-                <button
-                  id={`history-item-${index}`}
-                  type="button"
-                  title={item}
-                  onClick={() => onSelect(item)}
+              return (
+                <div
+                  key={c.id}
+                  data-chat-menu-root={c.id}
+                  title={formatChatTime(c.updated_at) || undefined}
+                  onMouseEnter={() => setHoveredRowId(c.id)}
+                  onMouseLeave={() => setHoveredRowId((id) => (id === c.id ? null : id))}
                   style={{
-                    width: "100%",
-                    textAlign: "left",
-                    padding: "11px 14px",
-                    fontSize: "13px",
-                    lineHeight: 1.45,
-                    border: "1px solid transparent",
-                    borderRadius: "10px",
-                    backgroundColor: "transparent",
-                    color: "var(--text)",
-                    cursor: "pointer",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                    display: "block",
-                    marginBottom: "4px",
-                    transition: "background-color 0.12s ease, border-color 0.12s ease",
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = "var(--surface-2)";
-                    e.currentTarget.style.borderColor = "var(--border-subtle)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = "transparent";
-                    e.currentTarget.style.borderColor = "transparent";
+                    position: "relative",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "4px",
+                    padding: "4px 6px 4px 8px",
+                    borderRadius: "8px",
+                    backgroundColor:
+                      active || hoveredRowId === c.id || menuOpenId === c.id
+                        ? "var(--surface-1)"
+                        : "transparent",
+                    transition: "background-color 0.15s ease, color 0.15s ease",
                   }}
                 >
-                  {item}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+                  <button
+                    type="button"
+                    onClick={() => onSelectChat(c.id)}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      padding: "6px 4px 6px 6px",
+                      fontSize: "13.5px",
+                      border: "none",
+                      borderRadius: "6px",
+                      background: "transparent",
+                      color: active ? "var(--text)" : "var(--text-muted)",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                    onMouseOver={(e) => {
+                      if (!active) {
+                        e.currentTarget.style.color = "var(--text)";
+                      }
+                    }}
+                    onMouseOut={(e) => {
+                      if (!active) {
+                        e.currentTarget.style.color = "var(--text-muted)";
+                      }
+                    }}
+                  >
+                    {title}
+                  </button>
+
+                  {showActions && (
+                    <button
+                      type="button"
+                      aria-label="Chat options"
+                      aria-expanded={menuOpen}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMenuOpenId(menuOpen ? null : c.id);
+                      }}
+                      style={{
+                        flexShrink: 0,
+                        width: "28px",
+                        height: "28px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        border: "none",
+                        borderRadius: "6px",
+                        backgroundColor: menuOpen ? "var(--surface-1)" : "transparent",
+                        color: "var(--text-muted)",
+                        cursor: "pointer",
+                      }}
+                      onMouseOver={(e) => {
+                        e.currentTarget.style.backgroundColor = "var(--surface-1)";
+                        e.currentTarget.style.color = "var(--text)";
+                      }}
+                      onMouseOut={(e) => {
+                        if (!menuOpen) e.currentTarget.style.backgroundColor = "transparent";
+                        e.currentTarget.style.color = menuOpen ? "var(--text)" : "var(--text-muted)";
+                      }}
+                    >
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                        <circle cx="5" cy="12" r="2" />
+                        <circle cx="12" cy="12" r="2" />
+                        <circle cx="19" cy="12" r="2" />
+                      </svg>
+                    </button>
+                  )}
+
+                  {menuOpen && (
+                    <div
+                      role="menu"
+                      style={{
+                        position: "absolute",
+                        right: "4px",
+                        top: "calc(100% - 2px)",
+                        ...menuSurface,
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        style={menuItem}
+                        onMouseOver={(e) => {
+                          e.currentTarget.style.backgroundColor = "var(--sidebar-bg)";
+                        }}
+                        onMouseOut={(e) => {
+                          e.currentTarget.style.backgroundColor = "transparent";
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuOpenId(null);
+                          onRenameChat(c.id, title);
+                        }}
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        style={{ ...menuItem, color: "var(--error)" }}
+                        onMouseOver={(e) => {
+                          e.currentTarget.style.backgroundColor = "var(--sidebar-bg)";
+                        }}
+                        onMouseOut={(e) => {
+                          e.currentTarget.style.backgroundColor = "transparent";
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuOpenId(null);
+                          onDeleteChat(c.id);
+                        }}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </aside>
   );

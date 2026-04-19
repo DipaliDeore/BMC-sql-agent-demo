@@ -65,7 +65,7 @@ def get_embedding(text: str) -> Optional[List[float]]:
     """
     Embedding for ``text`` using EMBEDDING_MODEL. Returns None if unavailable.
 
-    Uses ``normalize_query_for_embedding`` so Pinecone upserts and queries
+    Uses ``normalize_query_for_embedding`` so OpenSearch indexing and search
     stay aligned.
     """
     if not text:

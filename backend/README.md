@@ -26,7 +26,7 @@ The server will start at **http://localhost:8000**.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET`  | `/health` | Health check – returns `{"status":"running"}` |
+| `GET`  | `/` | Health check – returns status and version JSON |
 | `POST` | `/api/query` | Submit a natural language question |
 | `GET`  | `/api/schema` | Returns the current DB schema |
 | `GET`  | `/docs` | Interactive Swagger UI |
@@ -57,19 +57,18 @@ The server will start at **http://localhost:8000**.
 | `DB_USER` | Database username |
 | `DB_PASSWORD` | Database password |
 | `DB_NAME` | Database name |
-| `PINECONE_API_KEY` | Pinecone API key (optional; for semantic cache) |
-| `PINECONE_INDEX_NAME` | Pinecone index name (default: `sql-agent-cache`) |
-| `OPENAI_API_KEY` | OpenAI API key (optional; for embeddings used by Pinecone cache) |
+| `OPENSEARCH_URL` | OpenSearch URL (optional; default `http://localhost:9200`) |
+| `OPENSEARCH_INDEX_NAME` | Index name for question→SQL cache (default `sql-agent-cache`) |
+| `OPENAI_API_KEY` | OpenAI API key (optional; for embeddings used by the OpenSearch cache) |
 
-## Semantic cache (Pinecone)
+## Semantic cache (OpenSearch)
 
-If `PINECONE_API_KEY` and `OPENAI_API_KEY` are set, the app uses **Pinecone** as a semantic cache:
+If **OpenSearch** is reachable and `OPENAI_API_KEY` is set, the app uses a **k-NN index** as a semantic cache:
 
-- **Before** calling the AI, it looks up a similar past question in Pinecone (embedding similarity).
-- If a similar question is found with score &gt; 0.85, the cached SQL is reused (no Gemini call).
-- After each **new** successful query, the (question, SQL) pair is stored in Pinecone for future hits.
+- **Before** calling the AI, it retrieves similar past (question, SQL) pairs above a similarity threshold and passes them in as **few-shot references** (the LLM still generates SQL).
+- After each **new** successful query with rows returned, the pair is **indexed** in OpenSearch for future retrieval.
 
-This reduces latency and API usage for repeated or paraphrased questions. If either key is missing, the cache is skipped and all queries go through Gemini as before.
+If OpenSearch or embeddings are unavailable, the cache is skipped and queries still run through Gemini.
 
 ## File Structure
 
@@ -83,10 +82,10 @@ backend/
 │   ├── sql_generator.py    # LangChain + Gemini → SQL
 │   ├── query_validator.py  # Safety checks (SELECT-only, no injection)
 │   ├── routes.py           # API route definitions
-│   ├── pinecone_client.py  # Pinecone client and index (semantic cache)
+│   ├── opensearch_client.py # OpenSearch client + index mapping (semantic cache)
 │   ├── embedding.py        # OpenAI text-embedding-3-small embeddings
-│   ├── store.py            # Store question + SQL in Pinecone
-│   └── search.py           # Find similar query in Pinecone
+│   ├── store.py            # Store question + SQL in OpenSearch
+│   └── search.py           # Similar-query retrieval from OpenSearch
 ├── .env                    # Secret credentials (do NOT commit)
 ├── requirements.txt        # Python dependencies
 └── README.md               # This file

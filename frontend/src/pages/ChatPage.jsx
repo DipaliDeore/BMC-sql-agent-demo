@@ -1,61 +1,169 @@
 /**
- * ChatPage.jsx - Main Page Component
- * ------------------------------------
- * Composes the Sidebar and ChatWindow components.
- * Manages all application state:
- *   - messages: array of chat messages
- *   - history: array of past question strings
- *   - loading: whether a request is in progress
- *   - inputValue: current input field value
- *
- * Handles:
- *   - Sending questions to the API via agent.js
- *   - Adding messages and history entries
- *   - Error handling
- *   - Re-sending questions from history
- *
- * Props:
- *   theme        {string}    "dark" or "light"
- *   toggleTheme  {Function}  Toggles between dark and light mode
+ * ChatPage.jsx — ChatGPT-style sessions backed by API + Postgres (when configured)
  */
 
-import React, { useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
-import { sendQuery, getApiErrorMessage } from "../api/agent";
+import {
+  sendQuery,
+  getApiErrorMessage,
+  listChats,
+  createChat,
+  getChatMessages,
+  renameChat,
+  deleteChat,
+  mapMessagesForApi,
+} from "../api/agent";
+
+function fromApiMessage(row) {
+  if (row.role === "user") {
+    return { id: `db-${row.id}`, role: "user", content: row.content };
+  }
+  const p = row.payload || {};
+  return {
+    id: `db-${row.id}`,
+    serverMessageId: row.id,
+    role: "assistant",
+    content: row.content,
+    explanation: p.explanation ?? row.content,
+    sql: p.sql || "",
+    results: p.results || [],
+    row_count: p.row_count ?? 0,
+    result_sentence: p.result_sentence ?? null,
+    cache_references: p.cache_references ?? null,
+    is_multi: p.is_multi ?? false,
+    sub_responses: p.sub_responses ?? [],
+    is_ambiguous: p.is_ambiguous ?? false,
+    error: p.error ?? false,
+    errorText: p.errorText,
+    cache_doc_id: p.cache_doc_id ?? null,
+    feedback: p.feedback ?? null,
+    feedbacks: p.feedbacks ?? null,
+  };
+}
 
 export default function ChatPage({ theme, toggleTheme }) {
-  // State: chat messages, query history, loading indicator, input value
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [inputValue, setInputValue] = useState("");
-  const conversationIdRef = useRef(
-    typeof crypto !== "undefined" && crypto.randomUUID
-      ? crypto.randomUUID()
-      : `session-${Date.now()}-${Math.random().toString(36).slice(2)}`
-  );
+  const [initError, setInitError] = useState(null);
 
-  /**
-   * Handle sending a question to the backend.
-   * Called when user clicks "Run" or presses Enter.
-   */
-  async function handleSend(question) {
-    // Add the user message to the chat
-    const userMessage = {
-      role: "user",
-      content: question,
+  const refreshChats = useCallback(async () => {
+    const list = await listChats();
+    setChats(list);
+    return list;
+  }, []);
+
+  const loadMessages = useCallback(async (chatId) => {
+    const raw = await getChatMessages(chatId);
+    setMessages(raw.map(fromApiMessage));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        let list = await listChats();
+        if (cancelled) return;
+        if (list.length === 0) {
+          const c = await createChat();
+          list = [c];
+        }
+        setChats(list);
+        const firstId = list[0].id;
+        setActiveChatId(firstId);
+        const raw = await getChatMessages(firstId);
+        if (cancelled) return;
+        setMessages(raw.map(fromApiMessage));
+        setInitError(null);
+      } catch (e) {
+        if (!cancelled) setInitError(getApiErrorMessage(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
-    setMessages((prev) => [...prev, userMessage]);
+  }, []);
+
+  const activeTitle = chats.find((c) => c.id === activeChatId)?.title || "";
+
+  async function handleNewChat() {
+    try {
+      const c = await createChat();
+      setChats((prev) => [c, ...prev.filter((x) => x.id !== c.id)]);
+      setActiveChatId(c.id);
+      setMessages([]);
+      setInputValue("");
+      setInitError(null);
+    } catch (e) {
+      setInitError(getApiErrorMessage(e));
+    }
+  }
+
+  async function handleSelectChat(chatId) {
+    if (chatId === activeChatId || loading) return;
+    try {
+      setActiveChatId(chatId);
+      await loadMessages(chatId);
+      setInputValue("");
+      setInitError(null);
+    } catch (e) {
+      setInitError(getApiErrorMessage(e));
+    }
+  }
+
+  async function handleRenameChat(chatId, currentTitle) {
+    const next = window.prompt("Chat name", currentTitle || "");
+    if (next === null) return;
+    const t = next.trim();
+    if (!t) return;
+    try {
+      await renameChat(chatId, t);
+      await refreshChats();
+    } catch (e) {
+      setInitError(getApiErrorMessage(e));
+    }
+  }
+
+  async function handleDeleteChat(chatId) {
+    if (!window.confirm("Delete this chat and its messages?")) return;
+    try {
+      await deleteChat(chatId);
+      const list = await refreshChats();
+      if (chatId === activeChatId) {
+        if (list.length === 0) {
+          const c = await createChat();
+          setChats([c]);
+          setActiveChatId(c.id);
+          setMessages([]);
+        } else {
+          setActiveChatId(list[0].id);
+          await loadMessages(list[0].id);
+        }
+      }
+    } catch (e) {
+      setInitError(getApiErrorMessage(e));
+    }
+  }
+
+  async function handleSend(question) {
+    if (!activeChatId) return;
+    const userMessage = { id: `local-u-${Date.now()}`, role: "user", content: question };
+    const nextMessages = [...messages, userMessage];
+    setMessages(nextMessages);
     setLoading(true);
 
     try {
-      // Call the backend API
-      const data = await sendQuery(question, conversationIdRef.current, "AUTO");
-      if (data.conversation_id) conversationIdRef.current = data.conversation_id;
+      const forApi = mapMessagesForApi(nextMessages);
+      const data = await sendQuery(question, activeChatId, "AUTO", forApi);
 
-      // Create the assistant response message
       const assistantMessage = {
+        id: `local-a-${Date.now()}`,
+        serverMessageId:
+          data.assistant_message_id != null ? Number(data.assistant_message_id) : null,
         role: "assistant",
         sql: data.sql,
         results: data.results,
@@ -67,15 +175,16 @@ export default function ChatPage({ theme, toggleTheme }) {
         sub_responses: data.sub_responses ?? [],
         is_ambiguous: data.is_ambiguous ?? false,
         original_question: question,
+        cache_doc_id: data.cache_doc_id ?? null,
+        feedback: null,
+        feedbacks: null,
       };
 
-      // Add assistant message to the chat
       setMessages((prev) => [...prev, assistantMessage]);
-
-      // Add question to history (newest first)
-      setHistory((prev) => [question, ...prev]);
+      await refreshChats();
     } catch (error) {
       const errorMessage = {
+        id: `local-e-${Date.now()}`,
         role: "assistant",
         error: true,
         errorText: getApiErrorMessage(error),
@@ -86,26 +195,75 @@ export default function ChatPage({ theme, toggleTheme }) {
     }
   }
 
-  /**
-   * Handle clicking a query history item.
-   * Re-sends the selected question.
-   */
-  function handleHistorySelect(question) {
-    setInputValue(question);
-    handleSend(question);
+  if (initError && !activeChatId) {
+    return (
+      <div className="app-shell" style={{ alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div
+          style={{
+            maxWidth: 420,
+            padding: 24,
+            borderRadius: 12,
+            border: "1px solid var(--border)",
+            background: "var(--surface-1)",
+            color: "var(--text)",
+          }}
+        >
+          <p style={{ marginBottom: 12, fontWeight: 600 }}>Could not load chats</p>
+          <p style={{ fontSize: 14, color: "var(--text-muted)", marginBottom: 16 }}>{initError}</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            style={{
+              padding: "10px 16px",
+              borderRadius: 8,
+              border: "none",
+              background: "var(--accent)",
+              color: "var(--accent-fg)",
+              fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="app-shell">
+      {initError && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 50,
+            padding: "10px 16px",
+            background: "var(--error-bg)",
+            color: "var(--error)",
+            fontSize: 13,
+            textAlign: "center",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
+          {initError}
+        </div>
+      )}
       <Sidebar
-        theme={theme}
-        toggleTheme={toggleTheme}
-        history={history}
-        onSelect={handleHistorySelect}
+        chats={chats}
+        activeChatId={activeChatId}
+        onNewChat={handleNewChat}
+        onSelectChat={handleSelectChat}
+        onRenameChat={handleRenameChat}
+        onDeleteChat={handleDeleteChat}
       />
-
       <ChatWindow
         theme={theme}
+        toggleTheme={toggleTheme}
+        chatTitle={activeTitle}
+        conversationId={activeChatId}
         messages={messages}
         loading={loading}
         onSend={handleSend}
