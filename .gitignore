@@ -15,5 +15,5 @@ build/
 .DS_Store
 Thumbs.db
 
-# Runtime feedback / metrics logs (local dev)
+# Runtime metrics logs (local dev)
 backend/data/
