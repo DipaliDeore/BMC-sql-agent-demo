@@ -12,15 +12,13 @@ from app.embedding import get_embedding
 from app.opensearch_client import get_opensearch_client
 from app import config
 
-_DEFAULT_TRUST = 1.0
-
 
 def store_query(question: str, sql: str, doc_id: str | None = None) -> bool:
     """
     Store a question and its corresponding SQL in OpenSearch for semantic cache.
 
     Generates an embedding for the question and indexes a document with
-    the vector, question, sql, and default cache metadata. Does nothing if
+    the vector, question, and sql. Does nothing if
     OpenSearch is unavailable.
 
     Args:
@@ -48,8 +46,6 @@ def store_query(question: str, sql: str, doc_id: str | None = None) -> bool:
             "embedding": embedding,
             "question": question,
             "sql": sql,
-            "trust_score": _DEFAULT_TRUST,
-            "suppressed": False,
         }
 
         client.index(

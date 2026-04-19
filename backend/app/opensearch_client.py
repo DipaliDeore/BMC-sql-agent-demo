@@ -72,26 +72,10 @@ def get_opensearch_client() -> Optional[OpenSearch]:
                         },
                         "question": {"type": "text"},
                         "sql": {"type": "text"},
-                        "trust_score": {"type": "float"},
-                        "suppressed": {"type": "boolean"},
                     }
                 }
             }
             client.indices.create(index=index_name, body=index_body)
-        else:
-            # Best-effort: ensure ranking fields exist on older indices.
-            try:
-                client.indices.put_mapping(
-                    index=index_name,
-                    body={
-                        "properties": {
-                            "trust_score": {"type": "float"},
-                            "suppressed": {"type": "boolean"},
-                        }
-                    },
-                )
-            except Exception:
-                pass
 
         _opensearch_client = client
         return _opensearch_client
