@@ -9,12 +9,15 @@ Endpoints:
     GET  /api/test-db   — Test the database connection
     GET  /api/schema    — Return the database schema
     POST /api/query     — Ask a natural language question → get SQL + results + explanation
+    POST /api/query/stream — Same pipeline as ``/api/query`` over SSE (tokens, status, rows, final JSON)
+
+Also see ``app.services.feedback_service``: POST /feedback (thumbs up/down) at app root.
 """
 
 import asyncio
-import functools
 import uuid
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from langsmith import traceable
 
@@ -26,8 +29,12 @@ from app.sql_generator import is_dangerous_input
 from app.query_validator import validate_sql, QueryValidationError
 from app.search import REFERENCE_TOP_K, find_similar_queries
 from app.agent_executor import generate_and_execute_with_tools
-from app.store import store_query
 from app import chat_store
+from app.response_formatting import (
+    build_result_sentence,
+    build_results_narrative,
+    merge_explanation_with_narrative,
+)
 
 
 # ── Create API Router ─────────────────────────────────────────────────────────
@@ -144,111 +151,6 @@ def _is_safe_reference(ex: dict) -> bool:
         return True
     except QueryValidationError:
         return False
-
-
-def _format_single_value(val) -> str:
-    """Format a single value for display (no column names)."""
-    if val is None:
-        return "—"
-    if isinstance(val, bool):
-        return str(val)
-    if isinstance(val, (int, float)):
-        return f"{val:,.2f}" if isinstance(val, float) else f"{val:,}"
-    try:
-        v = float(val)
-        return f"{v:,.2f}" if v != int(v) else f"{int(v):,}"
-    except (TypeError, ValueError):
-        return str(val)
-
-
-def _build_result_sentence(results: list[dict], answer_template: str | None = None) -> str | None:
-    """Return a natural language sentence ONLY when result is a single value (1 row, 1 column)."""
-    if not results or len(results) != 1:
-        return None
-    row = results[0]
-    if not row or len(row) != 1:
-        return None
-    val = next(iter(row.values()))
-    formatted = _format_single_value(val)
-    if answer_template and "{}" in answer_template:
-        try:
-            return answer_template.replace("{}", formatted, 1)
-        except Exception:
-            pass
-    return f"The result is {formatted}."
-
-
-# Plain-language phrases for common aggregate column names (demo schema)
-_RESULT_COLUMN_PHRASES: dict[str, str] = {
-    "total_overall": "total sales overall",
-    "total_january": "total sales in January",
-    "total_february": "total sales in February",
-    "total_march": "total sales in March",
-    "total_amount": "total amount",
-    "order_count": "number of orders",
-    "customer_count": "number of customers",
-}
-
-
-def _metric_phrase_for_column(key: str) -> str:
-    """Turn a result column name into a short phrase for sentences (lowercase)."""
-    raw = (key or "").strip()
-    kl = raw.lower()
-    if kl in _RESULT_COLUMN_PHRASES:
-        return _RESULT_COLUMN_PHRASES[kl]
-    # Strip common SQL aggregate wrappers from labels
-    label = raw
-    for prefix in ("SUM(", "AVG(", "COUNT(", "MIN(", "MAX("):
-        if label.upper().startswith(prefix):
-            label = label[len(prefix) :]
-            break
-    label = label.replace(")", "").replace("(", " ").strip() or raw
-    return label.replace("_", " ").strip().lower()
-
-
-def _build_results_narrative(results: list[dict]) -> str | None:
-    """
-    Human-readable summary grounded in actual cell values (for chat + LangSmith clarity).
-    Single row with multiple metrics -> simple sentences; many rows -> short intro pointing to table.
-    """
-    if not results:
-        return None
-    if len(results) > 1:
-        return f"I found {len(results)} rows — the table below has the details."
-
-    row = results[0]
-    if not row:
-        return None
-    if len(row) < 2:
-        return None
-
-    sentences: list[str] = []
-    for key, val in row.items():
-        phrase = _metric_phrase_for_column(key)
-        formatted = _format_single_value(val)
-        sentences.append(f"The {phrase} is {formatted}.")
-
-    body = " ".join(sentences)
-    return f"Here's what the data shows:\n\n{body}"
-
-
-def _merge_explanation_with_narrative(llm_explanation: str, narrative: str | None) -> str:
-    """Put numeric facts first; keep the model's friendly context after."""
-    llm = (llm_explanation or "").strip()
-    if not narrative:
-        return llm
-    generic_llm = llm.lower() in (
-        "",
-        "query executed successfully.",
-        "here's what i pulled.",
-        "got it!",
-    )
-    if generic_llm or not llm:
-        return narrative
-    return f"{narrative}\n\n{llm}"
-
-
-
 
 
 # ── Endpoint 1: Test Database Connection ──────────────────────────────────────
@@ -416,16 +318,11 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
                 conversation_id=conversation_id,
             )
 
-        # Fire-and-forget: store in OpenSearch after response — doc id is known up front for cache_doc_id.
-        cache_doc_id = str(uuid.uuid4())
-        loop.run_in_executor(
-            None,
-            functools.partial(store_query, body.question, safe_sql, cache_doc_id),
-        )
+        # Semantic cache writes only via POST /feedback (thumbs up); do not auto-index every reply.
         row_count = len(result)
 
-        narrative = _build_results_narrative(result)
-        explanation = _merge_explanation_with_narrative(explanation, narrative)
+        narrative = build_results_narrative(result)
+        explanation = merge_explanation_with_narrative(explanation, narrative)
 
         return QueryResponse(
             question=body.question,
@@ -433,10 +330,10 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             results=result,
             explanation=explanation,
             row_count=row_count,
-            result_sentence=_build_result_sentence(result, answer_template),
+            result_sentence=build_result_sentence(result, answer_template),
             cache_references=filtered_examples or None,
             conversation_id=conversation_id,
-            cache_doc_id=cache_doc_id,
+            cache_doc_id=None,
         )
 
 
@@ -502,6 +399,68 @@ async def handle_query(body: QueryRequest):
         _assistant_payload_from_response(response),
     )
     return response.model_copy(update={"assistant_message_id": str(row["id"])})
+
+
+@router.post("/query/stream")
+async def handle_query_stream(body: QueryRequest):
+    """
+    SSE stream of NL→SQL progress (tokens, status, SQL, row chunks) and one HTTP-shaped ``final``.
+
+    Does not change ``POST /api/query`` behavior.
+    """
+    from app.query_stream import encode_sse, streaming_query_handler
+
+    conversation_id = (body.conversation_id or "").strip() or str(uuid.uuid4())
+    body = body.model_copy(update={"conversation_id": conversation_id})
+
+    if not body.question.strip():
+
+        async def _empty_sse():
+            final = {
+                "question": body.question,
+                "conversation_id": conversation_id,
+                "sql": "",
+                "results": [],
+                "explanation": "Hmm, I didn't quite catch that — could you ask that again with a bit more detail?",
+                "row_count": 0,
+                "result_sentence": None,
+                "cache_references": None,
+                "is_multi": False,
+                "sub_responses": [],
+                "is_ambiguous": False,
+                "cache_doc_id": None,
+                "assistant_message_id": None,
+            }
+            yield encode_sse({"type": "status", "content": "done"})
+            yield encode_sse({"type": "final", "content": final})
+
+        return StreamingResponse(
+            _empty_sse(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    _ = body.messages
+
+    chat_store.ensure_chat(conversation_id)
+    chat_store.maybe_set_title_from_first_question(
+        conversation_id, body.question.strip()
+    )
+    chat_store.add_message(conversation_id, "user", body.question.strip(), None)
+
+    return StreamingResponse(
+        streaming_query_handler(body),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/chats")

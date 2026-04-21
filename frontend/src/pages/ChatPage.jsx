@@ -6,7 +6,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
 import {
-  sendQuery,
+  streamQuery,
   getApiErrorMessage,
   listChats,
   createChat,
@@ -149,41 +149,99 @@ export default function ChatPage({ theme, toggleTheme }) {
     if (!activeChatId) return;
     const userMessage = { id: `local-u-${Date.now()}`, role: "user", content: question };
     const nextMessages = [...messages, userMessage];
-    setMessages(nextMessages);
-    setLoading(true);
+    const assistantId = `local-a-${Date.now()}`;
+    const streamingPlaceholder = {
+      id: assistantId,
+      role: "assistant",
+      streaming: true,
+      streamText: "",
+      streamStatus: "Thinking…",
+      streamSql: "",
+      streamRows: [],
+      original_question: question,
+    };
+    setMessages([...nextMessages, streamingPlaceholder]);
+    setLoading(false);
 
     try {
-      const forApi = mapMessagesForApi(nextMessages);
-      const data = await sendQuery(question, activeChatId, "AUTO", forApi);
-
-      const assistantMessage = {
-        id: `local-a-${Date.now()}`,
-        serverMessageId:
-          data.assistant_message_id != null ? Number(data.assistant_message_id) : null,
-        role: "assistant",
-        sql: data.sql,
-        results: data.results,
-        explanation: data.explanation,
-        row_count: data.row_count,
-        result_sentence: data.result_sentence ?? null,
-        cache_references: data.cache_references ?? null,
-        is_multi: data.is_multi ?? false,
-        sub_responses: data.sub_responses ?? [],
-        is_ambiguous: data.is_ambiguous ?? false,
-        original_question: question,
-        cache_doc_id: data.cache_doc_id ?? null,
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
+      const forApi = mapMessagesForApi([...nextMessages, streamingPlaceholder]);
+      await streamQuery(question, activeChatId, "AUTO", forApi, {
+        onEvent: (evt) => {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== assistantId) return m;
+              if (evt.type === "status") {
+                const key = String(evt.content || "");
+                const labels = {
+                  thinking: "Thinking…",
+                  generating_sql: "Generating SQL…",
+                  executing_sql: "Executing query…",
+                  done: "Wrapping up…",
+                };
+                return {
+                  ...m,
+                  streamStatus: labels[key] || key || m.streamStatus,
+                };
+              }
+              if (evt.type === "token") {
+                return {
+                  ...m,
+                  streamText: (m.streamText || "") + String(evt.content || ""),
+                };
+              }
+              if (evt.type === "sql") {
+                return { ...m, streamSql: String(evt.content || "") };
+              }
+              if (evt.type === "data" && evt.content && typeof evt.content === "object") {
+                return { ...m, streamRows: [...(m.streamRows || []), evt.content] };
+              }
+              if (evt.type === "final") {
+                const d = evt.content || {};
+                return {
+                  id: assistantId,
+                  serverMessageId:
+                    d.assistant_message_id != null ? Number(d.assistant_message_id) : null,
+                  role: "assistant",
+                  sql: d.sql,
+                  results: d.results,
+                  explanation: d.explanation,
+                  row_count: d.row_count,
+                  result_sentence: d.result_sentence ?? null,
+                  cache_references: d.cache_references ?? null,
+                  is_multi: d.is_multi ?? false,
+                  sub_responses: d.sub_responses ?? [],
+                  is_ambiguous: d.is_ambiguous ?? false,
+                  original_question: question,
+                  cache_doc_id: d.cache_doc_id ?? null,
+                };
+              }
+              if (evt.type === "error") {
+                return {
+                  id: assistantId,
+                  role: "assistant",
+                  error: true,
+                  errorText: String(evt.content || "Something went wrong."),
+                };
+              }
+              return m;
+            })
+          );
+        },
+      });
       await refreshChats();
     } catch (error) {
-      const errorMessage = {
-        id: `local-e-${Date.now()}`,
-        role: "assistant",
-        error: true,
-        errorText: getApiErrorMessage(error),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? {
+                id: assistantId,
+                role: "assistant",
+                error: true,
+                errorText: getApiErrorMessage(error),
+              }
+            : m
+        )
+      );
     } finally {
       setLoading(false);
     }
