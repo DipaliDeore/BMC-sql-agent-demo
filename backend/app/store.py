@@ -6,11 +6,24 @@ for the question and indexing it. Used after a successful query execution so
 future similar questions can retrieve it as a few-shot reference.
 """
 
+import hashlib
 import uuid
 
 from app.embedding import get_embedding
 from app.opensearch_client import get_opensearch_client
 from app import config
+
+
+def make_stable_cache_doc_id(question: str, sql: str) -> str:
+    """
+    Deterministic OpenSearch document id for a (question, sql) pair.
+
+    Re-using the same id avoids duplicate vectors when the same pair is
+    submitted again (e.g. repeated thumbs-up feedback).
+    """
+    payload = f"{question}\x1e{sql}".encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
+    return f"pair-{digest}"
 
 
 def store_query(question: str, sql: str, doc_id: str | None = None) -> bool:

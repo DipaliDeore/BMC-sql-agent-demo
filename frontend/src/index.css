@@ -428,6 +428,98 @@ button:focus:not(:focus-visible) {
   color: var(--error);
 }
 
+.error-msg-stack {
+  width: 100%;
+  max-width: min(85%, 640px);
+}
+
+.error-msg-stack .error-msg-inline {
+  max-width: 100%;
+}
+
+/* Feedback (thumbs) under assistant / error replies */
+.msg-feedback-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+}
+
+.msg-feedback-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.msg-feedback-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.msg-feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--app-bg) 40%, var(--assistant-panel));
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    background-color 0.15s var(--ease-out),
+    border-color 0.15s var(--ease-out),
+    transform 0.12s var(--ease-out);
+}
+
+.msg-feedback-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--assistant-panel));
+}
+
+.msg-feedback-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.msg-feedback-btn:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.msg-feedback-btn--up-active {
+  border-color: color-mix(in srgb, #22c55e 55%, var(--border));
+  background: color-mix(in srgb, #22c55e 14%, var(--assistant-panel));
+}
+
+.msg-feedback-btn--down-active {
+  border-color: color-mix(in srgb, var(--error) 45%, var(--border));
+  background: color-mix(in srgb, var(--error) 10%, var(--assistant-panel));
+}
+
+.msg-feedback-emoji {
+  font-size: 1.125rem;
+  line-height: 1;
+}
+
+.msg-feedback-thanks {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.msg-feedback-error {
+  font-size: 12px;
+  color: var(--error);
+  width: 100%;
+  line-height: 1.4;
+}
+
 .loading-msg-card {
   max-width: min(85%, 440px);
   padding: 16px 20px;

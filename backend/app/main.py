@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routes import router
+from app.services.feedback_service import feedback_router
 from app.error_handlers import register_error_handlers
 
 
@@ -63,6 +64,8 @@ register_error_handlers(app)
 # All API endpoints (test-db, schema, query) are defined in routes.py.
 # The router adds a /api prefix to all routes automatically.
 app.include_router(router)
+# POST /feedback (spec path at app root, not under /api)
+app.include_router(feedback_router)
 
 
 # ── Step 5: Health Check Endpoint ────────────────────────────────────────────

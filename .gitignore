@@ -17,3 +17,6 @@ Thumbs.db
 
 # Runtime metrics logs (local dev)
 backend/data/
+
+# User feedback logs (may contain query text)
+logs/

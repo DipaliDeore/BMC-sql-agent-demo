@@ -5,8 +5,10 @@
 import React from "react";
 import ResultTable from "./ResultTable";
 import SqlViewer from "./SqlViewer";
+import MessageFeedback from "./MessageFeedback";
 
-export default function MessageBubble({ message, theme }) {
+export default function MessageBubble({ message, theme, pairedUserQuery = "" }) {
+  const feedbackQuery = (pairedUserQuery || message.original_question || "").trim();
   const isUser = message.role === "user";
 
   if (isUser) {
@@ -17,12 +19,62 @@ export default function MessageBubble({ message, theme }) {
     );
   }
 
+  if (message.streaming) {
+    const n = message.streamRows?.length ?? 0;
+    return (
+      <div className="msg-animate" style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
+        <div className="assistant-msg-panel" style={{ width: "100%" }}>
+          {message.streamStatus && (
+            <div
+              style={{
+                fontSize: "12px",
+                fontWeight: 600,
+                color: "var(--text-muted)",
+                marginBottom: "10px",
+                letterSpacing: "0.02em",
+              }}
+            >
+              {message.streamStatus}
+            </div>
+          )}
+          {message.streamText ? (
+            <div
+              className="msg-body"
+              style={{
+                whiteSpace: "pre-wrap",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                fontSize: "13px",
+                lineHeight: 1.45,
+              }}
+            >
+              {message.streamText}
+              <span style={{ opacity: 0.35 }}>▍</span>
+            </div>
+          ) : null}
+          {message.streamSql ? (
+            <div style={{ marginTop: "12px" }}>
+              <SqlViewer sql={message.streamSql} theme={theme} />
+            </div>
+          ) : null}
+          {n > 0 ? (
+            <p style={{ fontSize: "13px", color: "var(--text-muted)", marginTop: "10px" }}>
+              Received {n.toLocaleString()} row{n === 1 ? "" : "s"}…
+            </p>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   if (message.error) {
     return (
       <div className="msg-animate" style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
-        <div className="error-msg-inline">
-          {message.errorText ||
-            "Hmm, I didn't quite get that. Could you try again or rephrase?"}
+        <div className="error-msg-stack">
+          <div className="error-msg-inline">
+            {message.errorText ||
+              "Hmm, I didn't quite get that. Could you try again or rephrase?"}
+          </div>
+          <MessageFeedback pairedUserQuery={feedbackQuery} message={message} />
         </div>
       </div>
     );
@@ -88,6 +140,7 @@ export default function MessageBubble({ message, theme }) {
               )}
             </div>
           ))}
+          <MessageFeedback pairedUserQuery={feedbackQuery} message={message} />
         </div>
       </div>
     );
@@ -118,6 +171,7 @@ export default function MessageBubble({ message, theme }) {
             <SqlViewer sql={message.sql} theme={theme} />
           </div>
         )}
+        <MessageFeedback pairedUserQuery={feedbackQuery} message={message} />
       </div>
     </div>
   );

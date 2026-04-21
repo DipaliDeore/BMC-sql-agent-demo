@@ -11,7 +11,9 @@ Connects to TiDB Cloud (MySQL-compatible) using SSL and provides:
 
 import mysql.connector
 from mysql.connector import Error
+
 from app import config
+from app.serialization import make_json_serializable
 
 
 # ---------------------------------------------------------------------------
@@ -88,8 +90,14 @@ def execute_query(sql_query: str):
         # Step 3: Run the query
         cursor.execute(sql_query)
 
-        # Step 4: Fetch all rows
-        results = cursor.fetchall()
+        # Step 4: Fetch rows in chunks (avoids one huge fetchall buffer)
+        results: list[dict] = []
+        batch_size = 500
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+            results.extend(batch)
 
         return results  # e.g. [{"column": "value", ...}, ...]
 
@@ -99,6 +107,41 @@ def execute_query(sql_query: str):
 
     finally:
         # Always clean up — close cursor and connection even if an error occurred
+        if cursor:
+            cursor.close()
+        if connection and connection.is_connected():
+            connection.close()
+
+
+# ---------------------------------------------------------------------------
+# 2b. iter_query_rows — chunked fetch for streaming responses
+# ---------------------------------------------------------------------------
+
+
+def iter_query_rows(sql_query: str, *, batch_size: int = 200):
+    """
+    Execute a SELECT and yield JSON-serializable row dicts using fetchmany batches.
+
+    Yields:
+        dict: One row at a time.
+
+    Raises:
+        Exception: On connection / SQL errors (same surface as execute_query failures).
+    """
+    connection = None
+    cursor = None
+
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute(sql_query)
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+            for row in batch:
+                yield make_json_serializable(row)
+    finally:
         if cursor:
             cursor.close()
         if connection and connection.is_connected():

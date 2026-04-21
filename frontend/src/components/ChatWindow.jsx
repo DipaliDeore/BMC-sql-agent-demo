@@ -6,6 +6,14 @@ import React, { useRef, useEffect, useCallback } from "react";
 import MessageBubble from "./MessageBubble";
 import LoadingMessage from "./LoadingMessage";
 
+/** Last user message text before this index (for feedback pairing). */
+function pairedUserQueryForIndex(messages, index) {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === "user") return (messages[i].content || "").trim();
+  }
+  return "";
+}
+
 export default function ChatWindow({
   theme,
   toggleTheme,
@@ -102,6 +110,7 @@ export default function ChatWindow({
                 key={msg.id != null ? String(msg.id) : `m-${index}`}
                 message={msg}
                 theme={theme}
+                pairedUserQuery={pairedUserQueryForIndex(messages, index)}
               />
             ))}
           </div>

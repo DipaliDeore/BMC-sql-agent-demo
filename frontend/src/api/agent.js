@@ -82,3 +82,94 @@ export async function sendQuery(question, conversationId, preference = "AUTO", m
   return response.data;
 }
 
+/**
+ * POST /api/query/stream — SSE over fetch + ReadableStream (do not use axios).
+ *
+ * @param {string} question
+ * @param {string} [conversationId]
+ * @param {string} [preference]
+ * @param {Array<{role:string,content:string}>|null} [messages]
+ * @param {{ onEvent?: (e: { type: string, content: unknown }) => void }} [handlers]
+ * @returns {Promise<void>}
+ */
+export async function streamQuery(
+  question,
+  conversationId,
+  preference = "AUTO",
+  messages = null,
+  handlers = {}
+) {
+  const { onEvent } = handlers;
+  const body = { question, preference: preference || "AUTO" };
+  if (conversationId) body.conversation_id = conversationId;
+  if (messages?.length) body.messages = messages;
+
+  const res = await fetch(`${API_BASE_URL}/api/query/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    let detail = `Request failed (${res.status})`;
+    try {
+      const j = await res.json();
+      if (typeof j?.detail === "string") detail = j.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) {
+    throw new Error("No response body to read.");
+  }
+
+  const decoder = new TextDecoder();
+  let carry = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    carry += decoder.decode(value, { stream: true });
+
+    const blocks = carry.split("\n\n");
+    carry = blocks.pop() ?? "";
+
+    for (const block of blocks) {
+      const lines = block.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const jsonStr = trimmed.slice(5).trim();
+        if (!jsonStr) continue;
+        let evt;
+        try {
+          evt = JSON.parse(jsonStr);
+        } catch {
+          continue;
+        }
+        if (onEvent && evt?.type) onEvent(evt);
+      }
+    }
+  }
+}
+
+/**
+ * POST /feedback — thumbs up stores (query, sql) in semantic cache; down/none logs only.
+ *
+ * @param {string} query
+ * @param {string} response
+ * @param {"up"|"down"|"none"} feedback
+ * @param {{ sql?: string }} [options] — executed SQL for thumbs-up indexing (and optional log context)
+ * @returns {Promise<{ status: "stored_in_vector_db" | "logged" }>}
+ */
+export async function submitFeedback(query, response, feedback, options = {}) {
+  const body = { query, response, feedback };
+  const sql = (options.sql && String(options.sql).trim()) || "";
+  if (sql) body.sql = sql;
+  const res = await axios.post(`${API_BASE_URL}/feedback`, body);
+  return res.data;
+}
+
