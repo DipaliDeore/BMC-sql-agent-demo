@@ -2,7 +2,7 @@
  * MessageFeedback — visible thumbs up / down; POST /feedback
  */
 
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo, useState } from "react";
 import { submitFeedback, getApiErrorMessage } from "../api/agent";
 
 /** Executed SQL only — sent as ``sql`` so OpenSearch stores a clean query string. */
@@ -39,7 +39,8 @@ function buildFeedbackResponseText(message) {
 }
 
 export default function MessageFeedback({ pairedUserQuery, message }) {
-  const [choice, setChoice] = useState(null);
+  // feedbackState: null (not given), "up", "down"
+  const [feedbackState, setFeedbackState] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -49,63 +50,35 @@ export default function MessageFeedback({ pairedUserQuery, message }) {
   const responseOk = responseText.length > 0;
   const canShow = queryOk && responseOk;
 
-  const onVote = useCallback(
-    async (feedback) => {
-      if (!canShow || submitting || choice) return;
-      setError(null);
-      setSubmitting(true);
-      try {
-        await submitFeedback(pairedUserQuery.trim(), responseText, feedback, {
-          sql: sqlForVector || undefined,
-        });
-        setChoice(feedback);
-      } catch (e) {
-        setError(getApiErrorMessage(e));
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [pairedUserQuery, responseText, sqlForVector, canShow, submitting, choice]
-  );
+  async function onVote(type) {
+    if (feedbackState !== null) return; // Already voted
+    setFeedbackState(type); // Optimistic update
+    setError(null);
+    setSubmitting(true);
+    try {
+      await submitFeedback(pairedUserQuery.trim(), responseText, type, { sql: sqlForVector });
+    } catch (err) {
+      setFeedbackState(null); // Reset on error
+      setError(getApiErrorMessage(err));
+      console.error("Feedback failed:", err);
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   if (!canShow) return null;
-
-  const upActive = choice === "up";
-  const downActive = choice === "down";
-  const disabled = submitting || !!choice;
 
   return (
     <div className="msg-feedback-bar" role="group" aria-label="Rate this response">
       <span className="msg-feedback-label">Was this helpful?</span>
-      <div className="msg-feedback-actions">
-        <button
-          type="button"
-          className={`msg-feedback-btn${upActive ? " msg-feedback-btn--up-active" : ""}`}
-          onClick={() => onVote("up")}
-          disabled={disabled}
-          aria-pressed={upActive}
-          aria-label="Thumbs up — helpful"
-        >
-          <span className="msg-feedback-emoji" aria-hidden>
-            👍
-          </span>
-          <span>Helpful</span>
-        </button>
-        <button
-          type="button"
-          className={`msg-feedback-btn${downActive ? " msg-feedback-btn--down-active" : ""}`}
-          onClick={() => onVote("down")}
-          disabled={disabled}
-          aria-pressed={downActive}
-          aria-label="Thumbs down — not helpful"
-        >
-          <span className="msg-feedback-emoji" aria-hidden>
-            👎
-          </span>
-          <span>Not helpful</span>
-        </button>
-      </div>
-      {choice && <span className="msg-feedback-thanks">Thanks for the feedback.</span>}
+      {feedbackState === null && (
+        <div className="feedback-buttons">
+          <button onClick={() => onVote("up")} disabled={submitting}>👍</button>
+          <button onClick={() => onVote("down")} disabled={submitting}>👎</button>
+        </div>
+      )}
+      {feedbackState === "up" && <span>👍 Thanks!</span>}
+      {feedbackState === "down" && <span>👎 Noted!</span>}
       {error && <span className="msg-feedback-error">{error}</span>}
     </div>
   );

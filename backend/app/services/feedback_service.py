@@ -1,3 +1,27 @@
+from __future__ import annotations
+import threading
+from datetime import datetime
+# ── Helper: Thread-safe feedback logging ─────────────────────────────────────
+
+def log_feedback_to_file(entry: dict):
+    """
+    Append feedback entry to feedback_logs.jsonl
+    One JSON object per line (JSONL format)
+    File location: backend/logs/feedback_logs.jsonl
+    Create directory if not exists
+    Thread-safe writing using file lock
+    """
+    import os, json
+    from pathlib import Path
+    log_dir = Path(__file__).parent.parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / "feedback_logs.jsonl"
+    lock_file = log_dir / "feedback_logs.lock"
+    # Use a file lock for thread safety
+    lock = threading.Lock()
+    with lock:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 """
 feedback_service.py — Thumbs feedback: semantic cache (vector DB) or file logging.
 
@@ -7,7 +31,7 @@ Routing (strict):
     vector helpers are not called.
 """
 
-from __future__ import annotations
+
 
 import asyncio
 import json
@@ -105,6 +129,8 @@ class FeedbackRequest(BaseModel):
     feedback: Any = None
     # Optional; when dict, included in log lines and appended for thumbs-up storage text.
     metadata: Any = None
+    # Optional session_id for tracking user/session
+    session_id: str | None = None
 
 
 def _extract_sql_from_response(text: str) -> str:
@@ -159,75 +185,104 @@ def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:
     """
     query = (body.query or "").strip()
     response = (body.response or "").strip()
-    log_feedback = _feedback_log_label(body.feedback)
+    sql_val = _coerce_optional_str(body.sql)
+    session_id = body.session_id or "unknown"
+    feedback_type = str(body.feedback).strip().lower() if body.feedback else "none"
 
-    if not _is_thumbs_up(body.feedback):
-        entry: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "query": query,
-            "response": response,
-            "feedback": log_feedback,
-        }
-        sql_log = _coerce_optional_str(body.sql)
-        if sql_log:
-            entry["sql"] = sql_log
-        if isinstance(body.metadata, dict):
-            entry["metadata"] = body.metadata
-        _append_feedback_log_line(entry)
-        return FeedbackResponse(status="logged")
+    # Thumbs up: OpenSearch storage (unchanged)
+    if _is_thumbs_up(body.feedback):
+        if not query:
+            raise FeedbackProcessingError(
+                422,
+                "Thumbs-up requires a non-empty query.",
+            )
+        sql_stored = _sql_for_vector_index(body, response)
+        if not sql_stored:
+            raise FeedbackProcessingError(
+                422,
+                "Thumbs-up requires SQL to index: send the ``sql`` field from the assistant turn, "
+                "or include a SELECT/WITH statement in ``response``.",
+            )
 
-    # ── Strictly "up": vector DB only (never log success path to file) ──────────
-    if not query:
-        raise FeedbackProcessingError(
-            422,
-            "Thumbs-up requires a non-empty query.",
-        )
-    sql_stored = _sql_for_vector_index(body, response)
-    if not sql_stored:
-        raise FeedbackProcessingError(
-            422,
-            "Thumbs-up requires SQL to index: send the ``sql`` field from the assistant turn, "
-            "or include a SELECT/WITH statement in ``response``.",
-        )
+        client = get_opensearch_client()
+        if client is None:
+            raise FeedbackProcessingError(
+                503,
+                "Vector store is not available. Check OPENSEARCH_URL and that OpenSearch is running.",
+            )
 
-    client = get_opensearch_client()
-    if client is None:
-        raise FeedbackProcessingError(
-            503,
-            "Vector store is not available. Check OPENSEARCH_URL and that OpenSearch is running.",
-        )
+        index_name = config.OPENSEARCH_INDEX_NAME
+        doc_id = make_stable_cache_doc_id(query, sql_stored)
 
-    index_name = config.OPENSEARCH_INDEX_NAME
-    doc_id = make_stable_cache_doc_id(query, sql_stored)
+        sql_for_store = sql_stored
+        if isinstance(body.metadata, dict) and body.metadata:
+            try:
+                meta_json = json.dumps(body.metadata, ensure_ascii=False, sort_keys=True)
+                sql_for_store = f"{sql_stored}\n\n--- feedback_metadata ---\n{meta_json}"
+            except (TypeError, ValueError):
+                sql_for_store = sql_stored
 
-    sql_for_store = sql_stored
-    if isinstance(body.metadata, dict) and body.metadata:
         try:
-            meta_json = json.dumps(body.metadata, ensure_ascii=False, sort_keys=True)
-            sql_for_store = f"{sql_stored}\n\n--- feedback_metadata ---\n{meta_json}"
-        except (TypeError, ValueError):
-            sql_for_store = sql_stored
+            if client.exists(index=index_name, id=doc_id):
+                return FeedbackResponse(status="stored_in_vector_db")
 
-    try:
-        if client.exists(index=index_name, id=doc_id):
-            return FeedbackResponse(status="stored_in_vector_db")
+            stored = store_query(query, sql_for_store, doc_id=doc_id)
+        except FeedbackProcessingError:
+            raise
+        except Exception as exc:
+            raise FeedbackProcessingError(
+                503, f"Failed to store feedback in vector database: {type(exc).__name__}"
+            ) from exc
 
-        stored = store_query(query, sql_for_store, doc_id=doc_id)
-    except FeedbackProcessingError:
-        raise
-    except Exception as exc:
-        raise FeedbackProcessingError(
-            503, f"Failed to store feedback in vector database: {type(exc).__name__}"
-        ) from exc
+        if not stored:
+            raise FeedbackProcessingError(
+                503,
+                "Could not index feedback (embedding or OpenSearch error). "
+                "Check OPENAI_API_KEY and OpenSearch connectivity.",
+            )
 
-    if not stored:
-        raise FeedbackProcessingError(
-            503,
-            "Could not index feedback (embedding or OpenSearch error). "
-            "Check OPENAI_API_KEY and OpenSearch connectivity.",
-        )
+        return FeedbackResponse(status="stored_in_vector_db")
 
-    return FeedbackResponse(status="stored_in_vector_db")
+    # Thumbs down: log to file
+    if feedback_type == "down":
+        entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "label": "NEGATIVE_FEEDBACK",
+            "query": query,
+            "sql": sql_val or "",
+            "ai_response": response or "",
+            "feedback_type": "down",
+            "session_id": session_id
+        }
+        log_feedback_to_file(entry)
+        return FeedbackResponse.model_validate({"status": "logged", "label": "NEGATIVE_FEEDBACK"})
+
+    # No feedback: log to file
+    if feedback_type == "none":
+        entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "label": "NO_FEEDBACK",
+            "query": query,
+            "sql": sql_val or "",
+            "ai_response": response or "",
+            "feedback_type": "none",
+            "session_id": session_id
+        }
+        log_feedback_to_file(entry)
+        return FeedbackResponse.model_validate({"status": "logged", "label": "NO_FEEDBACK"})
+
+    # For any other feedback type, just log as before (fallback)
+    entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "label": "UNKNOWN_FEEDBACK",
+        "query": query,
+        "sql": sql_val or "",
+        "ai_response": response or "",
+        "feedback_type": feedback_type,
+        "session_id": session_id
+    }
+    log_feedback_to_file(entry)
+    return FeedbackResponse.model_validate({"status": "logged", "label": "UNKNOWN_FEEDBACK"})
 
 
 # ── Router (mounted at app root as POST /feedback) ────────────────────────────

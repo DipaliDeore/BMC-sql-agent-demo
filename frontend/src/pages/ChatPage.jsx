@@ -1,8 +1,9 @@
 /**
- * ChatPage.jsx — ChatGPT-style sessions backed by API + Postgres (when configured)
+ * ChatPage.jsx — ChatGPT-style sessions backed by API + Postgres
  */
 
 import React, { useCallback, useEffect, useState } from "react";
+import { submitFeedback } from "../api/agent";
 import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
 import {
@@ -20,6 +21,7 @@ function fromApiMessage(row) {
   if (row.role === "user") {
     return { id: `db-${row.id}`, role: "user", content: row.content };
   }
+
   const p = row.payload || {};
   return {
     id: `db-${row.id}`,
@@ -60,96 +62,34 @@ export default function ChatPage({ theme, toggleTheme }) {
     setMessages(raw.map(fromApiMessage));
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        let list = await listChats();
-        if (cancelled) return;
-        if (list.length === 0) {
-          const c = await createChat();
-          list = [c];
-        }
-        setChats(list);
-        const firstId = list[0].id;
-        setActiveChatId(firstId);
-        const raw = await getChatMessages(firstId);
-        if (cancelled) return;
-        setMessages(raw.map(fromApiMessage));
-        setInitError(null);
-      } catch (e) {
-        if (!cancelled) setInitError(getApiErrorMessage(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function handleNewChat() {
-    try {
-      const c = await createChat();
-      setChats((prev) => [c, ...prev.filter((x) => x.id !== c.id)]);
-      setActiveChatId(c.id);
-      setMessages([]);
-      setInputValue("");
-      setInitError(null);
-    } catch (e) {
-      setInitError(getApiErrorMessage(e));
-    }
-  }
-
-  async function handleSelectChat(chatId) {
-    if (chatId === activeChatId || loading) return;
-    try {
-      setActiveChatId(chatId);
-      await loadMessages(chatId);
-      setInputValue("");
-      setInitError(null);
-    } catch (e) {
-      setInitError(getApiErrorMessage(e));
-    }
-  }
-
-  async function handleRenameChat(chatId, currentTitle) {
-    const next = window.prompt("Chat name", currentTitle || "");
-    if (next === null) return;
-    const t = next.trim();
-    if (!t) return;
-    try {
-      await renameChat(chatId, t);
-      await refreshChats();
-    } catch (e) {
-      setInitError(getApiErrorMessage(e));
-    }
-  }
-
-  async function handleDeleteChat(chatId) {
-    if (!window.confirm("Delete this chat and its messages?")) return;
-    try {
-      await deleteChat(chatId);
-      const list = await refreshChats();
-      if (chatId === activeChatId) {
-        if (list.length === 0) {
-          const c = await createChat();
-          setChats([c]);
-          setActiveChatId(c.id);
-          setMessages([]);
-        } else {
-          setActiveChatId(list[0].id);
-          await loadMessages(list[0].id);
-        }
-      }
-    } catch (e) {
-      setInitError(getApiErrorMessage(e));
-    }
-  }
-
+  // ✅ MAIN SEND FUNCTION (FIXED)
   async function handleSend(question) {
     if (!activeChatId) return;
-    const userMessage = { id: `local-u-${Date.now()}`, role: "user", content: question };
-    const nextMessages = [...messages, userMessage];
+
+    // 🔥 No-feedback tracking
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && !m.streaming);
+
+    if (lastAssistant && !lastAssistant.feedbackGiven) {
+      try {
+        await submitFeedback(
+          lastAssistant.original_question || "",
+          lastAssistant.explanation || lastAssistant.content || "",
+          "none",
+          { sql: lastAssistant.sql || "" }
+        );
+      } catch (e) {}
+    }
+
+    const userMessage = {
+      id: `local-u-${Date.now()}`,
+      role: "user",
+      content: question,
+    };
+
     const assistantId = `local-a-${Date.now()}`;
+
     const streamingPlaceholder = {
       id: assistantId,
       role: "assistant",
@@ -160,18 +100,22 @@ export default function ChatPage({ theme, toggleTheme }) {
       streamRows: [],
       original_question: question,
     };
+
+    const nextMessages = [...messages, userMessage];
+
     setMessages([...nextMessages, streamingPlaceholder]);
-    setLoading(false);
+    setLoading(true);
 
     try {
       const forApi = mapMessagesForApi([...nextMessages, streamingPlaceholder]);
+
       await streamQuery(question, activeChatId, "AUTO", forApi, {
         onEvent: (evt) => {
           setMessages((prev) =>
             prev.map((m) => {
               if (m.id !== assistantId) return m;
+
               if (evt.type === "status") {
-                const key = String(evt.content || "");
                 const labels = {
                   thinking: "Thinking…",
                   generating_sql: "Generating SQL…",
@@ -180,27 +124,33 @@ export default function ChatPage({ theme, toggleTheme }) {
                 };
                 return {
                   ...m,
-                  streamStatus: labels[key] || key || m.streamStatus,
+                  streamStatus: labels[evt.content] || evt.content,
                 };
               }
+
               if (evt.type === "token") {
                 return {
                   ...m,
-                  streamText: (m.streamText || "") + String(evt.content || ""),
+                  streamText: (m.streamText || "") + evt.content,
                 };
               }
+
               if (evt.type === "sql") {
-                return { ...m, streamSql: String(evt.content || "") };
+                return { ...m, streamSql: evt.content };
               }
-              if (evt.type === "data" && evt.content && typeof evt.content === "object") {
-                return { ...m, streamRows: [...(m.streamRows || []), evt.content] };
+
+              if (evt.type === "data") {
+                return {
+                  ...m,
+                  streamRows: [...(m.streamRows || []), evt.content],
+                };
               }
+
               if (evt.type === "final") {
                 const d = evt.content || {};
                 return {
                   id: assistantId,
-                  serverMessageId:
-                    d.assistant_message_id != null ? Number(d.assistant_message_id) : null,
+                  serverMessageId: d.assistant_message_id ?? null,
                   role: "assistant",
                   sql: d.sql,
                   results: d.results,
@@ -215,19 +165,22 @@ export default function ChatPage({ theme, toggleTheme }) {
                   cache_doc_id: d.cache_doc_id ?? null,
                 };
               }
+
               if (evt.type === "error") {
                 return {
                   id: assistantId,
                   role: "assistant",
                   error: true,
-                  errorText: String(evt.content || "Something went wrong."),
+                  errorText: evt.content || "Something went wrong",
                 };
               }
+
               return m;
             })
           );
         },
       });
+
       await refreshChats();
     } catch (error) {
       setMessages((prev) =>
@@ -247,18 +200,61 @@ export default function ChatPage({ theme, toggleTheme }) {
     }
   }
 
+  // ✅ Sidebar Handlers (FIXED)
+  const handleNewChat = async () => {
+    const c = await createChat();
+    setChats((prev) => [c, ...prev]);
+    setActiveChatId(c.id);
+    setMessages([]);
+  };
+
+  const handleSelectChat = async (id) => {
+    setActiveChatId(id);
+    await loadMessages(id);
+  };
+
+  const handleRenameChat = async (id, name) => {
+    await renameChat(id, name);
+    await refreshChats();
+  };
+
+  const handleDeleteChat = async (id) => {
+    await deleteChat(id);
+    const list = await refreshChats();
+    if (list.length > 0) {
+      setActiveChatId(list[0].id);
+      await loadMessages(list[0].id);
+    } else {
+      setMessages([]);
+    }
+  };
+
+  // ✅ INITIAL LOAD
+  useEffect(() => {
+    (async () => {
+      try {
+        let list = await listChats();
+
+        if (list.length === 0) {
+          const c = await createChat();
+          list = [c];
+        }
+
+        setChats(list);
+        setActiveChatId(list[0].id);
+        await loadMessages(list[0].id);
+      } catch (err) {
+        setInitError(getApiErrorMessage(err));
+      }
+    })();
+  }, []);
+
   if (initError && !activeChatId) {
     return (
-      <div className="app-shell" style={{ alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <div className="ui-init-card msg-animate">
-          <p style={{ marginBottom: 10, fontWeight: 600, fontSize: "16px" }}>Could not load chats</p>
-          <p style={{ fontSize: "14px", color: "var(--text-muted)", marginBottom: 18, lineHeight: 1.5 }}>
-            {initError}
-          </p>
-          <button type="button" className="ui-btn-primary" onClick={() => window.location.reload()}>
-            Retry
-          </button>
-        </div>
+      <div className="app-shell" style={{ padding: 24 }}>
+        <p>Could not load chats</p>
+        <p>{initError}</p>
+        <button onClick={() => window.location.reload()}>Retry</button>
       </div>
     );
   }
@@ -266,6 +262,7 @@ export default function ChatPage({ theme, toggleTheme }) {
   return (
     <div className="app-shell">
       {initError && <div className="ui-toast-error">{initError}</div>}
+
       <Sidebar
         chats={chats}
         activeChatId={activeChatId}
@@ -274,6 +271,7 @@ export default function ChatPage({ theme, toggleTheme }) {
         onRenameChat={handleRenameChat}
         onDeleteChat={handleDeleteChat}
       />
+
       <ChatWindow
         theme={theme}
         toggleTheme={toggleTheme}

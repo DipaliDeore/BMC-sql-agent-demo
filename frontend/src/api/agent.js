@@ -165,11 +165,26 @@ export async function streamQuery(
  * @param {{ sql?: string }} [options] — executed SQL for thumbs-up indexing (and optional log context)
  * @returns {Promise<{ status: "stored_in_vector_db" | "logged" }>}
  */
-export async function submitFeedback(query, response, feedback, options = {}) {
-  const body = { query, response, feedback };
-  const sql = (options.sql && String(options.sql).trim()) || "";
-  if (sql) body.sql = sql;
-  const res = await axios.post(`${API_BASE_URL}/feedback`, body);
+// Helper to get session ID (can be improved to use real session logic)
+function getSessionId() {
+  let sid = window.localStorage.getItem("session_id");
+  if (!sid) {
+    sid = `sess_${Math.random().toString(36).slice(2, 10)}`;
+    window.localStorage.setItem("session_id", sid);
+  }
+  return sid;
+}
+
+// feedback can be: "up", "down", or "none"
+export async function submitFeedback(query, response, feedback, { sql = "" } = {}) {
+  const payload = {
+    query,
+    response,
+    feedback, // "up" | "down" | "none"
+    sql,
+    session_id: getSessionId(),
+  };
+  const res = await axios.post(`${API_BASE_URL}/feedback`, payload);
   return res.data;
 }
 
