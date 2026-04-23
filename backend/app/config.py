@@ -51,15 +51,4 @@ MAX_SUB_QUERIES = int(os.getenv("MAX_SUB_QUERIES", "4"))
 MAX_QUERY_LENGTH = int(os.getenv("MAX_QUERY_LENGTH", "400"))
 MAX_ANALYSIS_CACHE_SIZE = int(os.getenv("MAX_ANALYSIS_CACHE_SIZE", "100"))
 
-# ── Latency: one-shot SQL (1 LLM) vs ReAct agent (many round-trips) ────────────────
-USE_FAST_SQL_PIPELINE = os.getenv("USE_FAST_SQL_PIPELINE", "true").lower() in (
-    "1",
-    "true",
-    "yes",
-)
-# When preference is AUTO, skip the extra Gemini multi-query classifier (saves 1 call).
-SKIP_MULTI_QUERY_LLM = os.getenv("SKIP_MULTI_QUERY_LLM", "true").lower() in (
-    "1",
-    "true",
-    "yes",
-)
+

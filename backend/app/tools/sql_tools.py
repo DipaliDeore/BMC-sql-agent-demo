@@ -82,7 +82,6 @@ def run_sql_query(sql: str) -> dict:
     if not sql or not str(sql).strip():
         print("[Tool:run_sql_query] Empty SQL received")
         return {
-            "success": False,
             "error": "Empty SQL query provided.",
             "error_type": "VALIDATION",
             "sql": sql
@@ -165,4 +164,18 @@ def run_sql_query(sql: str) -> dict:
         "results": safe_results,
         "row_count": len(safe_results),
         "sql": validated_sql
+    }
+
+@tool
+def render_pie_chart(label_column: str, value_column: str) -> dict:
+    """
+    Call this tool in PARALLEL with run_sql_query when the user requests a pie chart visualization or the data inherently represents a distribution/pie chart.
+    Specify exactly which column should be the label/category, and which column should be the numerical value.
+    Example: render_pie_chart(label_column="status", value_column="total_count")
+    """
+    return {
+        "success": True,
+        "is_pie_chart": True,
+        "label_column": label_column,
+        "value_column": value_column
     }

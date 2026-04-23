@@ -22,11 +22,8 @@ from pydantic import BaseModel, Field, field_validator
 from langsmith import traceable
 
 from app import config
-from app.fast_sql_pipeline import run_fast_sql_pipeline
 from app.database import execute_query, get_database_schema
-from app.query_analyzer import analyze_query
-from app.sql_generator import is_dangerous_input
-from app.query_validator import validate_sql, QueryValidationError
+from app.query_validator import validate_sql, QueryValidationError, is_dangerous_input
 from app.search import REFERENCE_TOP_K, find_similar_queries
 from app.agent_executor import generate_and_execute_with_tools
 from app import chat_store
@@ -97,6 +94,8 @@ class QueryResponse(BaseModel):
     cache_doc_id: str | None = None
     # DB id of the assistant row saved for this response.
     assistant_message_id: str | None = None
+    # Chart config for single query responses
+    chart_config: dict | None = None
 
 
 def _assistant_chat_content(resp: QueryResponse) -> str:
@@ -118,24 +117,11 @@ def _assistant_payload_from_response(resp: QueryResponse) -> dict:
         "sub_responses": resp.sub_responses,
         "is_ambiguous": resp.is_ambiguous,
         "cache_doc_id": resp.cache_doc_id,
+        "chart_config": resp.chart_config,
     }
 
 
-def _run_sql_agent(
-    question: str,
-    schema: str,
-    references: list | None,
-    *,
-    thread_id: str | None = None,
-) -> dict:
-    """One-shot pipeline by default; LangGraph agent when USE_FAST_SQL_PIPELINE is false."""
-    if config.USE_FAST_SQL_PIPELINE:
-        return run_fast_sql_pipeline(
-            question, schema, references, thread_id=thread_id
-        )
-    return generate_and_execute_with_tools(
-        question, schema, references, thread_id=thread_id
-    )
+
 
 
 def _is_safe_reference(ex: dict) -> bool:
@@ -244,7 +230,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             except QueryValidationError:
                 continue
 
-        tool_result = _run_sql_agent(
+        tool_result = generate_and_execute_with_tools(
             body.question,
             schema,
             filtered_examples or None,
@@ -334,6 +320,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             cache_references=filtered_examples or None,
             conversation_id=conversation_id,
             cache_doc_id=None,
+            chart_config=tool_result.get("chart_config"),
         )
 
 
@@ -430,6 +417,7 @@ async def handle_query_stream(body: QueryRequest):
                 "is_ambiguous": False,
                 "cache_doc_id": None,
                 "assistant_message_id": None,
+                "chart_config": None,
             }
             yield encode_sse({"type": "status", "content": "done"})
             yield encode_sse({"type": "final", "content": final})

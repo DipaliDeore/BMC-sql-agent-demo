@@ -31,21 +31,13 @@ from app.agent_executor import (
     _summarize_from_messages,
 )
 from app.database import get_database_schema
-from app.fast_sql_pipeline import _rate_limited, run_fast_sql_pipeline_after_gen
-from app.query_validator import QueryValidationError, validate_sql
+from app.query_validator import QueryValidationError, validate_sql, is_dangerous_input
 from app.response_formatting import (
     build_result_sentence,
     build_results_narrative,
     merge_explanation_with_narrative,
 )
 from app.search import REFERENCE_TOP_K, find_similar_queries
-from app.sql_generator import (
-    _ai_message_text,
-    _clean_json_response,
-    _references_to_text,
-    get_sql_app,
-    is_dangerous_input,
-)
 def _sse_data(obj: dict) -> bytes:
     line = json.dumps(obj, default=str)
     return f"data: {line}\n\n".encode("utf-8")
@@ -54,6 +46,10 @@ def _sse_data(obj: dict) -> bytes:
 def encode_sse(obj: dict) -> bytes:
     """Public alias for SSE framing (used by routes for one-shot streams)."""
     return _sse_data(obj)
+
+def _rate_limited(e: Exception) -> bool:
+    error_str = str(e).lower()
+    return any(k in error_str for k in ("429", "resource_exhausted", "quota"))
 
 
 def _text_delta_from_llm_chunk(msg: Any) -> str:
@@ -224,131 +220,7 @@ async def _stream_react_agent(
     yield {"type": "final", "content": summary}
 
 
-async def _stream_fast_sql_graph_tokens_then_execute(
-    question: str,
-    schema: str,
-    references: list[dict] | None,
-    thread_id: str,
-) -> AsyncIterator[dict[str, Any]]:
-    """
-    Fast pipeline streaming — **Option A**:
-    stream tokens from the SQL generator graph, then execute with chunked row emission.
-    """
-    yield {"type": "status", "content": "thinking"}
 
-    references_text = _references_to_text(references)
-    tid = (thread_id or "").strip() or str(uuid.uuid4())
-    sql_app = get_sql_app()
-    cfg: dict[str, Any] = {
-        "configurable": {
-            "thread_id": tid,
-            "schema": schema,
-            "references_text": references_text,
-        }
-    }
-
-    last_messages: list[Any] = []
-
-    try:
-        async for chunk in _async_iter_sync_graph_stream(
-            sql_app,
-            {"messages": [HumanMessage(content=question.strip())]},
-            cfg,
-            stream_mode=["messages", "values"],
-        ):
-            if not isinstance(chunk, tuple) or len(chunk) != 2:
-                continue
-            mode, payload = chunk
-            if mode == "messages":
-                if isinstance(payload, tuple) and len(payload) >= 1:
-                    token_msg = payload[0]
-                else:
-                    token_msg = payload
-                text = _text_delta_from_llm_chunk(token_msg)
-                if text:
-                    yield {"type": "token", "content": text}
-            elif mode == "values":
-                msgs = (payload or {}).get("messages") or []
-                if msgs:
-                    last_messages = msgs
-    except Exception as e:
-        if _rate_limited(e):
-            yield {
-                "type": "error",
-                "content": "The AI service is temporarily rate-limited. Please try again shortly.",
-            }
-            return
-        yield {"type": "error", "content": str(e) or "SQL generation stream failed."}
-        return
-
-    if not last_messages:
-        yield {"type": "error", "content": "No model output received."}
-        return
-
-    last = last_messages[-1]
-    if not isinstance(last, AIMessage):
-        yield {"type": "error", "content": "Unexpected message type from SQL generator."}
-        return
-
-    raw_response = _ai_message_text(last)
-    cleaned = _clean_json_response(raw_response)
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError:
-        yield {"type": "error", "content": "Failed to parse AI response as JSON."}
-        return
-
-    if "sql_query" not in parsed or "explanation" not in parsed:
-        yield {"type": "error", "content": "AI response missing sql_query or explanation."}
-        return
-
-    gen = {
-        "sql_query": parsed["sql_query"],
-        "explanation": parsed["explanation"],
-        **({"answer_template": parsed["answer_template"]} if parsed.get("answer_template") else {}),
-    }
-
-    row_buffer: list[dict] = []
-
-    def on_row(row: dict) -> None:
-        row_buffer.append(row)
-
-    loop = asyncio.get_running_loop()
-    sql_raw = (gen.get("sql_query") or "").strip()
-    if sql_raw and sql_raw != "NOT_RELATED":
-        yield {"type": "status", "content": "generating_sql"}
-        yield {"type": "sql", "content": sql_raw}
-        yield {"type": "status", "content": "executing_sql"}
-
-    try:
-        tool_result = await loop.run_in_executor(
-            None,
-            functools.partial(
-                run_fast_sql_pipeline_after_gen,
-                gen,
-                question.strip(),
-                schema,
-                on_row=on_row if sql_raw and sql_raw != "NOT_RELATED" else None,
-            ),
-        )
-    except Exception as e:
-        yield {"type": "error", "content": str(e) or "Pipeline execution failed."}
-        return
-
-    final_sql = (tool_result.get("sql_query") or "").strip()
-    if (
-        tool_result.get("status") == "success"
-        and final_sql
-        and sql_raw
-        and sql_raw != "NOT_RELATED"
-        and final_sql != sql_raw
-    ):
-        yield {"type": "sql", "content": final_sql}
-    for row in row_buffer:
-        yield {"type": "data", "content": row}
-
-    yield {"type": "status", "content": "done"}
-    yield {"type": "final", "content": tool_result}
 
 
 def _filter_safe_references(raw: list[dict]) -> list[dict]:
@@ -395,6 +267,7 @@ def _final_http_payload_from_tool_result(
         "is_ambiguous": False,
         "cache_doc_id": tool_result.get("cache_doc_id"),
         "assistant_message_id": assistant_message_id,
+        "chart_config": tool_result.get("chart_config"),
     }
 
 
@@ -415,6 +288,7 @@ def _chat_payload_from_final(final: dict[str, Any]) -> dict[str, Any]:
         "sub_responses": final.get("sub_responses") or [],
         "is_ambiguous": final.get("is_ambiguous", False),
         "cache_doc_id": final.get("cache_doc_id"),
+        "chart_config": final.get("chart_config"),
     }
 
 
@@ -511,13 +385,7 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
     tool_result: dict[str, Any] | None = None
 
     try:
-        stream = (
-            _stream_fast_sql_graph_tokens_then_execute(
-                question, schema, cache_refs or None, conversation_id
-            )
-            if config.USE_FAST_SQL_PIPELINE
-            else _stream_react_agent(question, schema, cache_refs or None, conversation_id)
-        )
+        stream = _stream_react_agent(question, schema, cache_refs or None, conversation_id)
         async for ev in stream:
             if ev.get("type") == "error":
                 yield _sse_data(ev)

@@ -112,3 +112,15 @@ def validate_sql(sql_query: str) -> str:
     # ── All checks passed ────────────────────────────────────────────────
     # Return the original query unchanged.
     return sql_query
+
+
+DANGEROUS_KEYWORDS = [
+    "delete", "drop", "update", "insert", "truncate",
+    "alter", "remove", "erase", "clear", "destroy",
+    "modify", "change", "edit", "wipe",
+]
+
+def is_dangerous_input(question: str) -> bool:
+    """Check if the natural language question contains dangerous keywords."""
+    question_lower = question.lower()
+    return any(keyword in question_lower for keyword in DANGEROUS_KEYWORDS)
