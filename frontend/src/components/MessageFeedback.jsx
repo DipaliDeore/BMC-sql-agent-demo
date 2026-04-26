@@ -1,3 +1,13 @@
+// Generate unique key for this message
+function getFeedbackStorageKey(docId, query, sql) {
+  if (docId) return `fb_${docId}`
+  const raw = `${(query || '').slice(0, 50)}_${(sql || '').slice(0, 50)}`
+  try {
+    return `fb_${btoa(encodeURIComponent(raw)).slice(0, 24)}`
+  } catch {
+    return `fb_${raw.replace(/[^a-z0-9]/gi, '').slice(0, 24)}`
+  }
+}
 /**
  * MessageFeedback — visible thumbs up / down; POST /feedback
  */
@@ -39,28 +49,47 @@ function buildFeedbackResponseText(message) {
 }
 
 export default function MessageFeedback({ pairedUserQuery, message }) {
-  // feedbackState: null (not given), "up", "down"
-  const [feedbackState, setFeedbackState] = useState(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
-
   const responseText = useMemo(() => buildFeedbackResponseText(message), [message]);
   const sqlForVector = useMemo(() => buildSqlForFeedback(message), [message]);
   const queryOk = (pairedUserQuery || "").trim().length > 0;
   const responseOk = responseText.length > 0;
   const canShow = queryOk && responseOk;
 
-  async function onVote(type) {
-    if (feedbackState !== null) return; // Already voted
-    setFeedbackState(type); // Optimistic update
-    setError(null);
-    setSubmitting(true);
+  // LocalStorage-backed feedback state
+  const feedbackKey = getFeedbackStorageKey(
+    message?.cache_doc_id,
+    pairedUserQuery,
+    message?.sql
+  );
+  const [feedbackState, setFeedbackState] = useState(() => {
     try {
-      await submitFeedback(pairedUserQuery.trim(), responseText, type, { sql: sqlForVector });
+      return localStorage.getItem(feedbackKey) || null;
+    } catch {
+      return null;
+    }
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function onVote(type) {
+    if (feedbackState !== null || submitting) return;
+    setFeedbackState(type); // Optimistic update
+    try {
+      localStorage.setItem(feedbackKey, type);
+    } catch {}
+    setSubmitting(true);
+    setError(null);
+    try {
+      await submitFeedback(
+        pairedUserQuery.trim(),
+        responseText,
+        type,
+        { sql: sqlForVector }
+      );
     } catch (err) {
-      setFeedbackState(null); // Reset on error
+      setFeedbackState(null); // Rollback on error
+      try { localStorage.removeItem(feedbackKey); } catch {}
       setError(getApiErrorMessage(err));
-      console.error("Feedback failed:", err);
     } finally {
       setSubmitting(false);
     }

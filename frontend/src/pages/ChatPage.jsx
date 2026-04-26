@@ -62,25 +62,9 @@ export default function ChatPage({ theme, toggleTheme }) {
     setMessages(raw.map(fromApiMessage));
   }, []);
 
-  // ✅ MAIN SEND FUNCTION (FIXED)
+  // ✅ FIXED handleSend
   async function handleSend(question) {
     if (!activeChatId) return;
-
-    // 🔥 No-feedback tracking
-    const lastAssistant = [...messages]
-      .reverse()
-      .find((m) => m.role === "assistant" && !m.streaming);
-
-    if (lastAssistant && !lastAssistant.feedbackGiven) {
-      try {
-        await submitFeedback(
-          lastAssistant.original_question || "",
-          lastAssistant.explanation || lastAssistant.content || "",
-          "none",
-          { sql: lastAssistant.sql || "" }
-        );
-      } catch (e) {}
-    }
 
     const userMessage = {
       id: `local-u-${Date.now()}`,
@@ -107,7 +91,10 @@ export default function ChatPage({ theme, toggleTheme }) {
     setLoading(true);
 
     try {
-      const forApi = mapMessagesForApi([...nextMessages, streamingPlaceholder]);
+      const forApi = mapMessagesForApi([
+        ...nextMessages,
+        streamingPlaceholder,
+      ]);
 
       await streamQuery(question, activeChatId, "AUTO", forApi, {
         onEvent: (evt) => {
@@ -162,16 +149,6 @@ export default function ChatPage({ theme, toggleTheme }) {
                   sub_responses: d.sub_responses ?? [],
                   is_ambiguous: d.is_ambiguous ?? false,
                   original_question: question,
-                  cache_doc_id: d.cache_doc_id ?? null,
-                };
-              }
-
-              if (evt.type === "error") {
-                return {
-                  id: assistantId,
-                  role: "assistant",
-                  error: true,
-                  errorText: evt.content || "Something went wrong",
                 };
               }
 
@@ -200,7 +177,7 @@ export default function ChatPage({ theme, toggleTheme }) {
     }
   }
 
-  // ✅ Sidebar Handlers (FIXED)
+  // ✅ Sidebar Handlers
   const handleNewChat = async () => {
     const c = await createChat();
     setChats((prev) => [c, ...prev]);
