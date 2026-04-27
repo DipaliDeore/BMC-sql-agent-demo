@@ -305,8 +305,12 @@ def _materialize_http_final(
     if status == "sql_error":
         tr["explanation"] = "Sorry, could not generate a valid query. Please try rephrasing."
 
+    # Single-query empty rows only: multi-query uses top-level results=[] with data in sub_responses.
     if status == "success" and not (tr.get("results") or []):
-        tr["explanation"] = "I ran the query but nothing matched. Try broadening your filters."
+        subs = tr.get("sub_responses") or []
+        has_sub_rows = any(len(s.get("results") or []) > 0 for s in subs)
+        if not tr.get("is_multi") and not has_sub_rows:
+            tr["explanation"] = "I ran the query but nothing matched. Try broadening your filters."
 
     # Semantic cache writes only via POST /feedback (thumbs up); do not auto-index stream replies.
     final = _final_http_payload_from_tool_result(
