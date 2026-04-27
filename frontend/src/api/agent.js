@@ -175,12 +175,15 @@ function getSessionId() {
   return sid;
 }
 
-// feedback can be: "up", "down", or "none"
+// feedback can be: "up" or "down" only
 export async function submitFeedback(query, response, feedback, { sql = "" } = {}) {
+  if (feedback !== "up" && feedback !== "down") {
+    throw new Error("submitFeedback: feedback must be 'up' or 'down'");
+  }
   const payload = {
     query,
     response,
-    feedback, // "up" | "down" | "none"
+    feedback, // "up" | "down"
     sql,
     session_id: getSessionId(),
   };
