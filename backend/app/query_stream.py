@@ -384,33 +384,62 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
 
     tool_result: dict[str, Any] | None = None
 
-    try:
-        stream = _stream_react_agent(question, schema, cache_refs or None, conversation_id)
-        async for ev in stream:
-            if ev.get("type") == "error":
+    # Fast Path: exact cache match bypasses LLM to save quota
+    if cache_refs and cache_refs[0].get("score", 0.0) >= 0.99:
+        from app.database import execute_query
+        exact_sql = cache_refs[0]["sql"]
+        yield _sse_data({"type": "status", "content": "executing_sql"})
+        yield _sse_data({"type": "sql", "content": exact_sql})
+        
+        try:
+            db_res = await loop.run_in_executor(None, execute_query, exact_sql)
+            if not (isinstance(db_res, dict) and "error" in db_res):
+                for row_data in db_res:
+                    yield _sse_data({"type": "data", "content": row_data})
+                
+                tool_result = {
+                    "status": "success",
+                    "sql_query": exact_sql,
+                    "results": db_res,
+                    "explanation": "I found an exact match for your question in my memory, so I answered it immediately without using the AI service.",
+                    "row_count": len(db_res),
+                    "is_multi": False,
+                    "sub_responses": []
+                }
+                yield _sse_data({"type": "status", "content": "done"})
+                yield _sse_data({"type": "final", "content": "I found an exact match for your question in my memory, so I answered it immediately without using the AI service."})
+        except Exception:
+            # If the fast path fails, we just fall back to the agent
+            tool_result = None
+
+    if tool_result is None:
+        try:
+            stream = _stream_react_agent(question, schema, cache_refs or None, conversation_id)
+            async for ev in stream:
+                if ev.get("type") == "error":
+                    yield _sse_data(ev)
+                    err_text = (ev.get("content") or "Error").strip() or "Error"
+                    chat_store.add_message(
+                        conversation_id,
+                        "assistant",
+                        err_text,
+                        {"error": True, "errorText": err_text},
+                    )
+                    return
+                if ev.get("type") == "final":
+                    tool_result = ev.get("content") if isinstance(ev.get("content"), dict) else None
+                    continue
                 yield _sse_data(ev)
-                err_text = (ev.get("content") or "Error").strip() or "Error"
-                chat_store.add_message(
-                    conversation_id,
-                    "assistant",
-                    err_text,
-                    {"error": True, "errorText": err_text},
-                )
-                return
-            if ev.get("type") == "final":
-                tool_result = ev.get("content") if isinstance(ev.get("content"), dict) else None
-                continue
-            yield _sse_data(ev)
-    except Exception as e:
-        err_text = (str(e) or "").strip() or "Stream failed."
-        yield _sse_data({"type": "error", "content": err_text})
-        chat_store.add_message(
-            conversation_id,
-            "assistant",
-            err_text,
-            {"error": True, "errorText": err_text},
-        )
-        return
+        except Exception as e:
+            err_text = (str(e) or "").strip() or "Stream failed."
+            yield _sse_data({"type": "error", "content": err_text})
+            chat_store.add_message(
+                conversation_id,
+                "assistant",
+                err_text,
+                {"error": True, "errorText": err_text},
+            )
+            return
 
     if tool_result is None:
         err_text = "No final tool result produced."

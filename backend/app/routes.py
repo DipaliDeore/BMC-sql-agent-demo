@@ -230,6 +230,29 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             except QueryValidationError:
                 continue
 
+        # Fast Path: bypass LLM if exact match is found
+        if filtered_examples and filtered_examples[0].get("score", 0.0) >= 0.99:
+            exact_match = filtered_examples[0]
+            exact_sql = exact_match["sql"]
+            db_res = execute_query(exact_sql)
+            if not (isinstance(db_res, dict) and "error" in db_res):
+                explanation = "I found an exact match for your question in my memory, so I answered it immediately without using the AI service."
+                narrative = build_results_narrative(db_res)
+                explanation = merge_explanation_with_narrative(explanation, narrative)
+                
+                return QueryResponse(
+                    question=body.question,
+                    sql=exact_sql,
+                    results=db_res,
+                    explanation=explanation,
+                    row_count=len(db_res),
+                    result_sentence=build_result_sentence(db_res, None),
+                    cache_references=filtered_examples or None,
+                    conversation_id=conversation_id,
+                    cache_doc_id=None,
+                    chart_config=None,
+                )
+
         tool_result = generate_and_execute_with_tools(
             body.question,
             schema,
