@@ -6,6 +6,7 @@ import React from "react";
 import ResultTable from "./ResultTable";
 import SqlViewer from "./SqlViewer";
 import MessageFeedback from "./MessageFeedback";
+import PieChartViewer from "./PieChartViewer";
 
 export default function MessageBubble({ message, theme, pairedUserQuery = "" }) {
   const feedbackQuery = (pairedUserQuery || message.original_question || "").trim();
@@ -119,12 +120,16 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
                 </p>
               )}
 
+              {sub.chart_config?.is_pie_chart && sub.results && sub.results.length > 0 && (
+                <PieChartViewer data={sub.results} config={sub.chart_config} />
+              )}
+
               {sub.result_sentence ? (
                 <p className="msg-body" style={{ marginBottom: "14px", fontWeight: 600 }}>
                   {sub.result_sentence}
                 </p>
               ) : sub.results && sub.results.length > 0 ? (
-                <div style={{ marginBottom: "14px" }}>
+                <div style={{ marginBottom: "14px", marginTop: sub.chart_config?.is_pie_chart ? "16px" : "0" }}>
                   <ResultTable results={sub.results} />
                 </div>
               ) : (
@@ -160,8 +165,13 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
             {message.result_sentence}
           </div>
         )}
+        
+        {message.chart_config?.is_pie_chart && message.results && message.results.length > 0 && (
+          <PieChartViewer data={message.results} config={message.chart_config} />
+        )}
+        
         {!message.result_sentence && message.results && message.results.length > 0 && (
-          <div style={{ marginBottom: "14px" }}>
+          <div style={{ marginBottom: "14px", marginTop: message.chart_config?.is_pie_chart ? "16px" : "0" }}>
             <ResultTable results={message.results} />
           </div>
         )}

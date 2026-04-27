@@ -40,6 +40,7 @@ function fromApiMessage(row) {
     error: p.error ?? false,
     errorText: p.errorText,
     cache_doc_id: p.cache_doc_id ?? null,
+    chart_config: p.chart_config ?? null,
   };
 }
 
@@ -149,6 +150,17 @@ export default function ChatPage({ theme, toggleTheme }) {
                   sub_responses: d.sub_responses ?? [],
                   is_ambiguous: d.is_ambiguous ?? false,
                   original_question: question,
+                  cache_doc_id: d.cache_doc_id ?? null,
+                  chart_config: d.chart_config ?? null,
+                };
+              }
+
+              if (evt.type === "error") {
+                return {
+                  id: assistantId,
+                  role: "assistant",
+                  error: true,
+                  errorText: evt.content || "Something went wrong",
                 };
               }
 

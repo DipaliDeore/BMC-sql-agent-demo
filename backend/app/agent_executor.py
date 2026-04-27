@@ -9,13 +9,13 @@ from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.prebuilt import create_react_agent
 
-from app.tools.sql_tools import run_sql_query
+from app.tools.sql_tools import run_sql_query, render_pie_chart
 from app import config
 from app.checkpointer import get_checkpointer
 from app.serialization import make_json_serializable
 
 
-AVAILABLE_TOOLS = [run_sql_query]
+AVAILABLE_TOOLS = [run_sql_query, render_pie_chart]
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +53,7 @@ YOUR TASK:
 STRICT RULES:
 - Max 6 tool calls
 - If the user asks for multiple distinct datasets or questions (e.g. 'How many customers and what are the top 3 products?'), you MUST explicitly make MULTIPLE PARALLEL tool calls at the exact same time by outputting an array with multiple run_sql_query calls. Do not process them one by one.
+- If the result inherently makes sense as a PIE CHART (e.g. visualizing distribution, percentages, parts of a whole, group by counts/sums), you MUST explicitly make PARALLEL tool calls to BOTH `run_sql_query` AND `render_pie_chart` at the exact same time. You do not need the user to explicitly say 'pie chart'. For `render_pie_chart`, provide the correct `label_column` and `value_column` matching exactly what your SQL returns.
 - If DB_ERROR → STOP immediately
 - If SQL_ERROR → fix and retry (max 2 retries)
 - After success → you may give a short explanation in plain text (no further tool calls needed)
@@ -177,6 +178,7 @@ def _summarize_from_messages(messages: list) -> dict:
     had_tool_attempt = False
     last_ai_text = ""
     successful_tools = []
+    pie_chart_config = None
 
     for msg in tail:
         if isinstance(msg, ToolMessage):
@@ -191,7 +193,14 @@ def _summarize_from_messages(messages: list) -> dict:
                     "status": "db_error",
                 }
             if data.get("success") is True:
-                successful_tools.append(data)
+                if data.get("is_pie_chart") is True:
+                    pie_chart_config = {
+                        "is_pie_chart": True,
+                        "label_column": data.get("label_column"),
+                        "value_column": data.get("value_column"),
+                    }
+                else:
+                    successful_tools.append(data)
         elif isinstance(msg, AIMessage):
             last_ai_text = extract_text(msg.content)
 
@@ -207,6 +216,7 @@ def _summarize_from_messages(messages: list) -> dict:
             "row_count": len(rows),
             "status": "success",
             "is_multi": False,
+            "chart_config": pie_chart_config,
         }
 
     elif len(successful_tools) > 1:
@@ -224,7 +234,8 @@ def _summarize_from_messages(messages: list) -> dict:
                 "result_sentence": "",
                 "cache_references": [],
                 "status": "success",
-                "cache_doc_id": None
+                "cache_doc_id": None,
+                "chart_config": pie_chart_config if i == 0 else None
             })
         return {
             "sql_query": "",
@@ -272,7 +283,7 @@ def generate_and_execute_with_tools(
             "schema": schema,
             "references_text": references_text,
         },
-        "recursion_limit": 12,
+        "recursion_limit": 4,
     }
 
     try:
