@@ -2,7 +2,7 @@
  * ChatPage.jsx — ChatGPT-style sessions backed by API + Postgres
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { submitFeedback } from "../api/agent";
 import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
@@ -46,10 +46,36 @@ function fromApiMessage(row) {
 export default function ChatPage({ theme, toggleTheme }) {
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [messagesByChat, setMessagesByChat] = useState({});
+  const [loadingByChat, setLoadingByChat] = useState({});
   const [inputValue, setInputValue] = useState("");
   const [initError, setInitError] = useState(null);
+
+  const activeMessages = useMemo(
+    () => (activeChatId ? messagesByChat[activeChatId] || [] : []),
+    [activeChatId, messagesByChat],
+  );
+  const activeLoading = activeChatId ? !!loadingByChat[activeChatId] : false;
+
+  const setChatMessages = useCallback((chatId, next) => {
+    setMessagesByChat((prev) => {
+      const current = prev[chatId] || [];
+      const resolved = typeof next === "function" ? next(current) : next;
+      return { ...prev, [chatId]: resolved };
+    });
+  }, []);
+
+  const setChatLoading = useCallback((chatId, value) => {
+    setLoadingByChat((prev) => ({ ...prev, [chatId]: value }));
+  }, []);
+
+  const mergeServerMessages = useCallback((existing, rawRows) => {
+    const serverMessages = rawRows.map(fromApiMessage);
+    const localStreaming = (existing || []).filter((m) => m?.streaming);
+    const localIds = new Set(serverMessages.map((m) => String(m.id)));
+    const pendingStreaming = localStreaming.filter((m) => !localIds.has(String(m.id)));
+    return [...serverMessages, ...pendingStreaming];
+  }, []);
 
   const refreshChats = useCallback(async () => {
     const list = await listChats();
@@ -59,12 +85,16 @@ export default function ChatPage({ theme, toggleTheme }) {
 
   const loadMessages = useCallback(async (chatId) => {
     const raw = await getChatMessages(chatId);
-    setMessages(raw.map(fromApiMessage));
-  }, []);
+    setMessagesByChat((prev) => ({
+      ...prev,
+      [chatId]: mergeServerMessages(prev[chatId] || [], raw),
+    }));
+  }, [mergeServerMessages]);
 
   // ✅ FIXED handleSend
   async function handleSend(question) {
     if (!activeChatId) return;
+    const chatId = activeChatId;
 
     const userMessage = {
       id: `local-u-${Date.now()}`,
@@ -72,7 +102,7 @@ export default function ChatPage({ theme, toggleTheme }) {
       content: question,
     };
 
-    const assistantId = `local-a-${Date.now()}`;
+    const assistantId = `local-a-${chatId}-${Date.now()}`;
 
     const streamingPlaceholder = {
       id: assistantId,
@@ -85,17 +115,18 @@ export default function ChatPage({ theme, toggleTheme }) {
       original_question: question,
     };
 
-    const nextMessages = [...messages, userMessage];
+    const currentMessages = messagesByChat[chatId] || [];
+    const nextMessages = [...currentMessages, userMessage];
 
-    setMessages([...nextMessages, streamingPlaceholder]);
-    setLoading(true);
+    setChatMessages(chatId, [...nextMessages, streamingPlaceholder]);
+    setChatLoading(chatId, true);
 
     try {
-      const forApi = mapMessagesForApi([...nextMessages, streamingPlaceholder]);
+      const forApi = mapMessagesForApi(nextMessages);
 
-      await streamQuery(question, activeChatId, "AUTO", forApi, {
+      await streamQuery(question, chatId, "AUTO", forApi, {
         onEvent: (evt) => {
-          setMessages((prev) =>
+          setChatMessages(chatId, (prev) =>
             prev.map((m) => {
               if (m.id !== assistantId) return m;
 
@@ -168,7 +199,7 @@ export default function ChatPage({ theme, toggleTheme }) {
 
       await refreshChats();
     } catch (error) {
-      setMessages((prev) =>
+      setChatMessages(chatId, (prev) =>
         prev.map((m) =>
           m.id === assistantId
             ? {
@@ -181,7 +212,7 @@ export default function ChatPage({ theme, toggleTheme }) {
         ),
       );
     } finally {
-      setLoading(false);
+      setChatLoading(chatId, false);
     }
   }
 
@@ -190,7 +221,8 @@ export default function ChatPage({ theme, toggleTheme }) {
     const c = await createChat();
     setChats((prev) => [c, ...prev]);
     setActiveChatId(c.id);
-    setMessages([]);
+    setMessagesByChat((prev) => ({ ...prev, [c.id]: [] }));
+    setLoadingByChat((prev) => ({ ...prev, [c.id]: false }));
   };
 
   const handleSelectChat = async (id) => {
@@ -210,7 +242,8 @@ export default function ChatPage({ theme, toggleTheme }) {
       setActiveChatId(list[0].id);
       await loadMessages(list[0].id);
     } else {
-      setMessages([]);
+      setMessagesByChat({});
+      setLoadingByChat({});
     }
   };
 
@@ -260,8 +293,8 @@ export default function ChatPage({ theme, toggleTheme }) {
       <ChatWindow
         theme={theme}
         toggleTheme={toggleTheme}
-        messages={messages}
-        loading={loading}
+        messages={activeMessages}
+        loading={activeLoading}
         onSend={handleSend}
         inputValue={inputValue}
         setInputValue={setInputValue}

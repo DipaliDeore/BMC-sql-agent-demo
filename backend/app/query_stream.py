@@ -29,8 +29,10 @@ from app.agent_executor import (
     _get_agent_app,
     _parse_tool_content,
     _summarize_from_messages,
+    generate_and_execute_with_tools,
 )
 from app.database import get_database_schema
+from app.question_planner import build_question_plan
 from app.query_validator import QueryValidationError, validate_sql, is_dangerous_input
 from app.response_formatting import (
     build_result_sentence,
@@ -387,9 +389,24 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
     cache_refs = _filter_safe_references(similar_raw or [])
 
     tool_result: dict[str, Any] | None = None
+    plan = build_question_plan(question, schema)
+
+    # For strategic/deterministic intents, use planner-backed executor directly
+    # so strategic recommendations don't fall into not_related in stream mode.
+    if plan.get("strategy") in ("strategic_mode", "deterministic_sql"):
+        tool_result = await loop.run_in_executor(
+            None,
+            functools.partial(
+                generate_and_execute_with_tools,
+                question,
+                schema,
+                cache_refs or None,
+                thread_id=conversation_id,
+            ),
+        )
 
     # Fast Path: exact cache match bypasses LLM to save quota
-    if cache_refs and cache_refs[0].get("score", 0.0) >= 0.99:
+    if tool_result is None and cache_refs and cache_refs[0].get("score", 0.0) >= 0.99:
         from app.database import execute_query
         exact_sql = cache_refs[0]["sql"]
         yield _sse_data({"type": "status", "content": "executing_sql"})
@@ -405,13 +422,13 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
                     "status": "success",
                     "sql_query": exact_sql,
                     "results": db_res,
-                    "explanation": "I found an exact match for your question in my memory, so I answered it immediately without using the AI service.",
+                    "explanation": "I ran a matching query for your question and retrieved the results below.",
                     "row_count": len(db_res),
                     "is_multi": False,
                     "sub_responses": []
                 }
                 yield _sse_data({"type": "status", "content": "done"})
-                yield _sse_data({"type": "final", "content": "I found an exact match for your question in my memory, so I answered it immediately without using the AI service."})
+                yield _sse_data({"type": "final", "content": "I ran a matching query for your question and prepared a clear summary of the result."})
         except Exception:
             # If the fast path fails, we just fall back to the agent
             tool_result = None
@@ -457,11 +474,12 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
         return
 
     final = _materialize_http_final(question, conversation_id, tool_result, cache_refs or None)
+    final_payload = _chat_payload_from_final(final)
     row = chat_store.add_message(
         conversation_id,
         "assistant",
         _chat_assistant_content(final),
-        _chat_payload_from_final(final),
+        final_payload,
     )
     final["assistant_message_id"] = str(row["id"])
     yield _sse_data({"type": "final", "content": final})

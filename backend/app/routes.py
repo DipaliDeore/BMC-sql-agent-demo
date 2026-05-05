@@ -236,7 +236,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             exact_sql = exact_match["sql"]
             db_res = execute_query(exact_sql)
             if not (isinstance(db_res, dict) and "error" in db_res):
-                explanation = "I found an exact match for your question in my memory, so I answered it immediately without using the AI service."
+                explanation = "I ran a matching query for your question and retrieved the results below."
                 narrative = build_results_narrative(db_res)
                 explanation = merge_explanation_with_narrative(explanation, narrative)
                 
