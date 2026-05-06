@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from decimal import Decimal
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,6 +19,16 @@ from app.checkpointer import get_postgres_pool
 
 _MEM_CHATS: dict[str, dict[str, Any]] = {}
 _MEM_MESSAGES: dict[str, list[dict[str, Any]]] = {}
+
+
+def _json_safe_payload(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _json_safe_payload(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_payload(v) for v in value]
+    return value
 
 
 def _now_iso() -> str:
@@ -236,10 +247,11 @@ def add_message(
         return row
     with pool.connection() as conn:
         with conn.cursor() as cur:
+            payload_for_db = _json_safe_payload(payload)
             cur.execute(
                 "INSERT INTO bmcs_chat_messages (chat_id, role, content, payload) "
                 "VALUES (%s, %s, %s, %s) RETURNING id",
-                (chat_id, role, content, Json(payload) if payload is not None else None),
+                (chat_id, role, content, Json(payload_for_db) if payload_for_db is not None else None),
             )
             row = cur.fetchone()
             if row is None:
@@ -257,7 +269,7 @@ def add_message(
         "chat_id": chat_id,
         "role": role,
         "content": content,
-        "payload": payload,
+        "payload": payload_for_db if pool is not None else payload,
         "created_at": _now_iso(),
     }
 

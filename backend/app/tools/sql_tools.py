@@ -11,6 +11,7 @@ LLM decides when to call — not the pipeline code.
 from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
+import re
 
 from langchain_core.tools import tool
 from app.query_validator import validate_sql, QueryValidationError
@@ -28,6 +29,45 @@ DB_ERROR_KEYWORDS = [
     "lost connection",
     "server has gone away",
 ]
+
+
+def _normalize_mysql_sql(sql: str) -> str:
+    """
+    Normalize common non-MySQL date expressions produced by LLMs.
+    Keeps behavior targeted to avoid changing valid MySQL SQL.
+    """
+    if not sql:
+        return sql
+
+    # SQLite style: strftime('%Y-%m', order_date) -> DATE_FORMAT(order_date, '%Y-%m')
+    normalized = re.sub(
+        r"strftime\(\s*'(%[^']+)'\s*,\s*([^)]+?)\s*\)",
+        r"DATE_FORMAT(\2, '\1')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+    lower_sql = normalized.lower()
+    has_order_items = "from order_items" in lower_sql
+    has_orders_join = " join orders " in lower_sql
+    references_order_date = "order_date" in lower_sql
+
+    # Common LLM mistake: filtering order_items by order_date without joining orders.
+    if has_order_items and references_order_date and not has_orders_join:
+        normalized = re.sub(
+            r"\bFROM\s+order_items\b(?:\s+(\w+))?",
+            "FROM order_items oi JOIN orders o ON oi.order_id = o.order_id",
+            normalized,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        normalized = re.sub(
+            r"(?<![\w.])order_date(?![\w.])",
+            "o.order_date",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -87,11 +127,15 @@ def run_sql_query(sql: str) -> dict:
             "sql": sql
         }
 
+    normalized_sql = _normalize_mysql_sql(str(sql))
+    if normalized_sql != str(sql):
+        print("[Tool:run_sql_query] Rewrote SQL to MySQL-compatible date functions")
+
     # -----------------------------------------------------------------------
     # Step 1: Validate SQL safety
     # -----------------------------------------------------------------------
     try:
-        validated_sql = validate_sql(sql)
+        validated_sql = validate_sql(normalized_sql)
         print("[Tool:run_sql_query] Validation passed")
     except QueryValidationError as e:
         print(f"[Tool:run_sql_query] Validation failed: {e}")
@@ -99,7 +143,7 @@ def run_sql_query(sql: str) -> dict:
             "success": False,
             "error": str(e),
             "error_type": "VALIDATION",
-            "sql": sql
+            "sql": normalized_sql
         }
 
     # -----------------------------------------------------------------------

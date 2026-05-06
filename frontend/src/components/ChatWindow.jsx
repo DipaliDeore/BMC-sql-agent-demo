@@ -26,6 +26,7 @@ export default function ChatWindow({
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
   const isDark = theme === "dark";
+  const hasStreamingAssistant = messages.some((m) => m.streaming);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -115,7 +116,7 @@ export default function ChatWindow({
             ))}
           </div>
 
-          {loading && <LoadingMessage />}
+          {loading && !hasStreamingAssistant && <LoadingMessage />}
         </div>
         <div ref={bottomRef} style={{ height: "32px" }} />
       </div>

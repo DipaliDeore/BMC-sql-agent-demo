@@ -18,6 +18,18 @@ def format_single_value(val) -> str:
         return str(val)
 
 
+def _is_numeric_like(val) -> bool:
+    if isinstance(val, bool) or val is None:
+        return False
+    if isinstance(val, (int, float)):
+        return True
+    try:
+        float(val)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
 _RESULT_COLUMN_PHRASES: dict[str, str] = {
     "total_overall": "total sales overall",
     "total_january": "total sales in January",
@@ -51,14 +63,14 @@ def build_result_sentence(results: list[dict], answer_template: str | None = Non
     row = results[0]
     if not row or len(row) != 1:
         return None
-    val = next(iter(row.values()))
+    key, val = next(iter(row.items()))
     formatted = format_single_value(val)
     if answer_template and "{}" in answer_template:
         try:
             return answer_template.replace("{}", formatted, 1)
         except Exception:
             pass
-    return f"The result is {formatted}."
+    return f"The {metric_phrase_for_column(key)} is {formatted}."
 
 
 def build_results_narrative(results: list[dict]) -> str | None:
@@ -69,22 +81,57 @@ def build_results_narrative(results: list[dict]) -> str | None:
     if not results:
         return None
     if len(results) > 1:
-        return f"I found {len(results)} rows — the table below has the details."
+        first_row = results[0] if isinstance(results[0], dict) else {}
+        if len(first_row) >= 2:
+            keys = list(first_row.keys())
+            dim_key = keys[0]
+            metric_key = keys[1]
+            rows_for_breakdown = [
+                r for r in results if isinstance(r, dict) and dim_key in r and metric_key in r
+            ]
+            if rows_for_breakdown and any(_is_numeric_like(r.get(metric_key)) for r in rows_for_breakdown):
+                lines = []
+                for r in rows_for_breakdown[:6]:
+                    dim_val = format_single_value(r.get(dim_key))
+                    metric_val = format_single_value(r.get(metric_key))
+                    lines.append(f"- {dim_val}: {metric_val}")
+                header = (
+                    f"Here is the {metric_phrase_for_column(metric_key)} breakdown by "
+                    f"{metric_phrase_for_column(dim_key)}:"
+                )
+                meaning = (
+                    "This breakdown helps compare performance across categories in your data."
+                )
+                return f"{header}\n" + "\n".join(lines) + f"\n\n{meaning}"
+        return (
+            f"I found {len(results)} rows that match your request. "
+            "The table shows the detailed breakdown."
+        )
 
     row = results[0]
     if not row:
         return None
-    if len(row) < 2:
-        return None
+    if len(row) == 1:
+        key, val = next(iter(row.items()))
+        phrase = metric_phrase_for_column(key)
+        formatted = format_single_value(val)
+        return (
+            f"The {phrase} is {formatted}.\n\n"
+            "This value represents the overall result for the filters in your request."
+        )
 
     sentences: list[str] = []
     for key, val in row.items():
-        phrase = metric_phrase_for_column(key)
+        phrase = metric_phrase_for_column(key).capitalize()
         formatted = format_single_value(val)
-        sentences.append(f"The {phrase} is {formatted}.")
+        sentences.append(f"- {phrase}: {formatted}")
 
-    body = " ".join(sentences)
-    return f"Here's what the data shows:\n\n{body}"
+    body = "\n".join(sentences)
+    return (
+        "Here are the key values from your result:\n"
+        f"{body}\n\n"
+        "These numbers summarize the main metrics returned by your query."
+    )
 
 
 def merge_explanation_with_narrative(llm_explanation: str, narrative: str | None) -> str:

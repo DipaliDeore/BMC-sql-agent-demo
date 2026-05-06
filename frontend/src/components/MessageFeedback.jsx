@@ -59,7 +59,7 @@ export default function MessageFeedback({ pairedUserQuery, message }) {
   const feedbackKey = getFeedbackStorageKey(
     message?.cache_doc_id,
     pairedUserQuery,
-    message?.sql
+    sqlForVector || message?.sql || ""
   );
   const [feedbackState, setFeedbackState] = useState(() => {
     try {
@@ -101,13 +101,49 @@ export default function MessageFeedback({ pairedUserQuery, message }) {
     <div className="msg-feedback-bar" role="group" aria-label="Rate this response">
       <span className="msg-feedback-label">Was this helpful?</span>
       {feedbackState === null && (
-        <div className="feedback-buttons">
-          <button onClick={() => onVote("up")} disabled={submitting}>👍</button>
-          <button onClick={() => onVote("down")} disabled={submitting}>👎</button>
+        <div className="msg-feedback-actions">
+          <button
+            type="button"
+            className="msg-feedback-btn"
+            onClick={() => onVote("up")}
+            disabled={submitting}
+            aria-label="Thumbs up — helpful"
+          >
+            <span className="msg-feedback-emoji" aria-hidden>
+              👍
+            </span>
+            Helpful
+          </button>
+          <button
+            type="button"
+            className="msg-feedback-btn"
+            onClick={() => onVote("down")}
+            disabled={submitting}
+            aria-label="Thumbs down — not helpful"
+          >
+            <span className="msg-feedback-emoji" aria-hidden>
+              👎
+            </span>
+            Not helpful
+          </button>
         </div>
       )}
-      {feedbackState === "up" && <span>👍 Thanks!</span>}
-      {feedbackState === "down" && <span>👎 Noted!</span>}
+      {feedbackState === "up" && (
+        <span className="msg-feedback-thanks">
+          <span className="msg-feedback-emoji" aria-hidden>
+            👍
+          </span>{" "}
+          Thanks for the feedback.
+        </span>
+      )}
+      {feedbackState === "down" && (
+        <span className="msg-feedback-thanks">
+          <span className="msg-feedback-emoji" aria-hidden>
+            👎
+          </span>{" "}
+          Thanks — we will use this to improve.
+        </span>
+      )}
       {error && <span className="msg-feedback-error">{error}</span>}
     </div>
   );
