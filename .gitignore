@@ -22,3 +22,5 @@ backend/data/
 logs/
 backend/logs/*.jsonl
 backend/logs/*.log
+
+backend/exports/*.xlsx

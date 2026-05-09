@@ -51,4 +51,7 @@ MAX_SUB_QUERIES = int(os.getenv("MAX_SUB_QUERIES", "4"))
 MAX_QUERY_LENGTH = int(os.getenv("MAX_QUERY_LENGTH", "400"))
 MAX_ANALYSIS_CACHE_SIZE = int(os.getenv("MAX_ANALYSIS_CACHE_SIZE", "100"))
 
+# Excel export thresholds
+EXCEL_INLINE_LIMIT = int(os.getenv("EXCEL_INLINE_LIMIT", "100"))
+
 

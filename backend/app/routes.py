@@ -21,6 +21,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from langsmith import traceable
 
+import os
+from pathlib import Path
+from fastapi.responses import FileResponse
+from app.excel_export import generate_excel
+
 from app import config
 from app.database import execute_query, get_database_schema
 from app.query_validator import validate_sql, QueryValidationError, is_dangerous_input
@@ -64,6 +69,7 @@ class QueryRequest(BaseModel):
     preference: str | None = "AUTO"  # "AUTO", "SINGLE", "MULTI"
     # Optional: full transcript from the client (stored server-side is authoritative)
     messages: list[ChatMessageItem] | None = None
+    
 
 
 class CreateChatBody(BaseModel):
@@ -96,6 +102,7 @@ class QueryResponse(BaseModel):
     assistant_message_id: str | None = None
     # Chart config for single query responses
     chart_config: dict | None = None
+    excel_download_url: str | None = None
 
 
 def _assistant_chat_content(resp: QueryResponse) -> str:
@@ -118,6 +125,7 @@ def _assistant_payload_from_response(resp: QueryResponse) -> dict:
         "is_ambiguous": resp.is_ambiguous,
         "cache_doc_id": resp.cache_doc_id,
         "chart_config": resp.chart_config,
+        "excel_download_url": resp.excel_download_url,
     }
 
 
@@ -260,6 +268,8 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             thread_id=conversation_id,
         )
 
+        
+
         if tool_result["status"] == "db_error":
             return QueryResponse(
                 question=body.question,
@@ -330,13 +340,26 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
         # Semantic cache writes only via POST /feedback (thumbs up); do not auto-index every reply.
         row_count = len(result)
 
+        excel_download_url = None
+
+        if row_count > 0:
+            try:
+                filepath = generate_excel(result)
+                filename = os.path.basename(filepath)
+                excel_download_url = f"/api/export/{filename}"
+            except Exception as e:
+                print(f"[ExcelExport] Failed: {e}")
+                excel_download_url = None
+
+        inline_results = result if row_count <= config.EXCEL_INLINE_LIMIT else []
+
         narrative = build_results_narrative(result)
         explanation = merge_explanation_with_narrative(explanation, narrative)
 
         return QueryResponse(
             question=body.question,
             sql=safe_sql,
-            results=result,
+            results=inline_results,
             explanation=explanation,
             row_count=row_count,
             result_sentence=build_result_sentence(result, answer_template),
@@ -344,6 +367,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
             conversation_id=conversation_id,
             cache_doc_id=None,
             chart_config=tool_result.get("chart_config"),
+            excel_download_url=excel_download_url,
         )
 
 
@@ -507,3 +531,22 @@ async def api_delete_chat(chat_id: str):
         raise HTTPException(status_code=404, detail="Chat not found")
     chat_store.delete_chat(chat_id)
     return {"ok": True}
+
+@router.get("/export/{filename}")
+async def download_excel(filename: str):
+    """Serve generated Excel file for download."""
+    # Security: prevent path traversal
+    if not filename.endswith(".xlsx") or "/" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    exports_dir = Path(__file__).parent.parent / "exports"
+    filepath = exports_dir / filename
+
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(
+        path=str(filepath),
+        filename=filename,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )

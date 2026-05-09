@@ -11,6 +11,7 @@ import PieChartViewer from "./PieChartViewer";
 export default function MessageBubble({ message, theme, pairedUserQuery = "" }) {
   const feedbackQuery = (pairedUserQuery || message.original_question || "").trim();
   const isUser = message.role === "user";
+  const canShowInlineResults = !message.row_count || message.row_count <= 100;
 
   if (isUser) {
     return (
@@ -38,6 +39,7 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
               {message.streamStatus}
             </div>
           )}
+
           {message.streamText ? (
             <div
               className="msg-body"
@@ -52,11 +54,13 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
               <span style={{ opacity: 0.35 }}>▍</span>
             </div>
           ) : null}
+
           {message.streamSql ? (
             <div style={{ marginTop: "12px" }}>
               <SqlViewer sql={message.streamSql} theme={theme} />
             </div>
           ) : null}
+
           {n > 0 ? (
             <p style={{ fontSize: "13px", color: "var(--text-muted)", marginTop: "10px" }}>
               Received {n.toLocaleString()} row{n === 1 ? "" : "s"}…
@@ -145,6 +149,7 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
               )}
             </div>
           ))}
+
           <MessageFeedback pairedUserQuery={feedbackQuery} message={message} />
         </div>
       </div>
@@ -155,22 +160,67 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
     <div className="msg-animate" style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
       <div className="assistant-msg-panel">
         {message.explanation && (
-          <div className="msg-body" style={{ marginBottom: message.result_sentence || message.results?.length ? "14px" : 0 }}>
+          <div className="msg-body" style={{ marginBottom: message.result_sentence || message.results?.length || message.excel_download_url ? "14px" : 0 }}>
             {message.explanation}
           </div>
         )}
 
-        {message.result_sentence && (
+        {/* Excel Download Button */}
+        {message.excel_download_url && (
+          <div style={{ margin: "12px 0" }}>
+            {message.row_count > 100 && (
+              <p
+                style={{
+                  fontSize: "13px",
+                  color: "var(--text-muted)",
+                  marginBottom: "8px",
+                  fontStyle: "italic",
+                }}
+              >
+                {message.row_count} rows returned — too large to display in chat.
+                Download the Excel file to view all results.
+              </p>
+            )}
+
+            <a
+              href={`http://localhost:8000${message.excel_download_url}`}
+              download
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "8px 16px",
+                backgroundColor: "var(--accent, #4f8ef7)",
+                color: "white",
+                borderRadius: "6px",
+                textDecoration: "none",
+                fontSize: "13px",
+                fontWeight: "600",
+              }}
+            >
+              Download Excel ({message.row_count} rows)
+            </a>
+          </div>
+        )}
+
+        {canShowInlineResults && message.result_sentence && (
           <div className="msg-body" style={{ marginBottom: "14px", fontWeight: 600 }}>
             {message.result_sentence}
           </div>
         )}
-        
-        {message.chart_config?.is_pie_chart && message.results && message.results.length > 0 && (
-          <PieChartViewer data={message.results} config={message.chart_config} />
+
+        {message.chart_config?.is_pie_chart &&
+          message.results &&
+          message.results.length > 0 && (
+            <div style={{ marginBottom: "14px" }}>
+              <PieChartViewer data={message.results} config={message.chart_config} />
+            </div>
         )}
-        
-        {!message.result_sentence && message.results && message.results.length > 0 && (
+
+        {canShowInlineResults &&
+        !message.result_sentence &&
+        message.results &&
+        message.results.length > 0 && (
           <div style={{ marginBottom: "14px", marginTop: message.chart_config?.is_pie_chart ? "16px" : "0" }}>
             <ResultTable results={message.results} />
           </div>
@@ -181,6 +231,7 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
             <SqlViewer sql={message.sql} theme={theme} />
           </div>
         )}
+
         <MessageFeedback pairedUserQuery={feedbackQuery} message={message} />
       </div>
     </div>

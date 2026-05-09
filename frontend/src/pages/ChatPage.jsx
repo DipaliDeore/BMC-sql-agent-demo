@@ -40,6 +40,7 @@ function fromApiMessage(row) {
     error: p.error ?? false,
     errorText: p.errorText,
     cache_doc_id: p.cache_doc_id ?? null,
+    excel_download_url: p.excel_download_url ?? null,
   };
 }
 
@@ -179,6 +180,7 @@ export default function ChatPage({ theme, toggleTheme }) {
                   original_question: question,
                   cache_doc_id: d.cache_doc_id ?? null,
                   chart_config: d.chart_config ?? null,
+                  excel_download_url: d.excel_download_url ?? null,
                 };
               }
 

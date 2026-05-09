@@ -19,6 +19,9 @@ import json
 import threading
 import uuid
 import functools
+import os
+from app.excel_export import generate_excel
+from app import config
 from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
@@ -249,17 +252,34 @@ def _final_http_payload_from_tool_result(
     sql = (tool_result.get("sql_query") or "").strip()
     results = tool_result.get("results") or []
     explanation = (tool_result.get("explanation") or "").strip()
-    row_count = int(tool_result.get("row_count") or 0)
+    row_count = int(tool_result.get("row_count") or len(results))
     answer_template = tool_result.get("answer_template")
 
     narrative = build_results_narrative(results) if results else None
     explanation_out = merge_explanation_with_narrative(explanation, narrative)
 
+    # Excel export logic
+    excel_download_url = None
+    inline_results = results
+
+    if row_count > 0:
+        try:
+            filepath = generate_excel(results)
+            fname = os.path.basename(filepath)
+            excel_download_url = f"/api/export/{fname}"
+        except Exception as exc:
+            print(f"[ExcelExport] Failed: {exc}")
+            excel_download_url = None
+
+    # Only send inline results if within limit
+    if row_count > config.EXCEL_INLINE_LIMIT:
+        inline_results = []
+
     return {
         "question": question,
         "conversation_id": conversation_id,
         "sql": sql,
-        "results": results,
+        "results": inline_results, 
         "explanation": explanation_out,
         "row_count": row_count,
         "result_sentence": build_result_sentence(results, answer_template),
@@ -270,6 +290,7 @@ def _final_http_payload_from_tool_result(
         "cache_doc_id": tool_result.get("cache_doc_id"),
         "assistant_message_id": assistant_message_id,
         "chart_config": tool_result.get("chart_config"),
+        "excel_download_url": excel_download_url,
     }
 
 
@@ -291,6 +312,7 @@ def _chat_payload_from_final(final: dict[str, Any]) -> dict[str, Any]:
         "is_ambiguous": final.get("is_ambiguous", False),
         "cache_doc_id": final.get("cache_doc_id"),
         "chart_config": final.get("chart_config"),
+        "excel_download_url": final.get("excel_download_url"),
     }
 
 
