@@ -1,8 +1,6 @@
 from __future__ import annotations
 import json
 import uuid
-from datetime import date, datetime
-from decimal import Decimal
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -13,6 +11,7 @@ from langgraph.prebuilt import create_react_agent
 from app.tools.sql_tools import run_sql_query, render_pie_chart
 from app import config
 from app.checkpointer import get_checkpointer
+from app.llm_errors import rate_limited
 from app.serialization import make_json_serializable
 from app.response_formatting import (
     build_result_sentence,
@@ -20,7 +19,12 @@ from app.response_formatting import (
 )
 from app.question_planner import build_question_plan
 from app.query_validator import validate_sql, QueryValidationError
-from app.database import execute_query
+from app.database import execute_query, select_sql_with_row_limit
+from app.memory.pipeline import (
+    apply_hybrid_message_view,
+    build_memory_preamble_for_system,
+    maybe_refresh_thread_memory_after_turn,
+)
 
 
 AVAILABLE_TOOLS = [run_sql_query, render_pie_chart]
@@ -49,6 +53,8 @@ def _prepend_system(state: dict, config: RunnableConfig) -> list:
     schema = conf.get("schema") or ""
     references_text = conf.get("references_text") or "No similar past queries available."
     plan_json = conf.get("plan_json") or "{}"
+    tid = (conf.get("thread_id") or "").strip()
+    memory_block = build_memory_preamble_for_system(tid)
     system_content = f"""You are an expert SQL query generator for a MySQL database.
 
 YOUR TASK:
@@ -82,6 +88,7 @@ SQL RULES:
 - For month-wise grouping, use MySQL date functions such as DATE_FORMAT(order_date, '%Y-%m'), MONTH(order_date), YEAR(order_date)
 - Never use SQLite/Postgres-only functions like strftime or date_trunc
 - For cross-table constraints (e.g., demand + stock), use proper joins or CTEs
+{memory_block}
 
 PLANNER METADATA (JSON):
 {plan_json}
@@ -92,8 +99,9 @@ Database Schema:
 References:
 {references_text}
 """
-    msgs = state.get("messages") or []
-    return [SystemMessage(content=system_content)] + list(msgs)
+    raw = state.get("messages") or []
+    msgs = apply_hybrid_message_view(raw, config)
+    return [SystemMessage(content=system_content)] + msgs
 
 
 def _get_agent_app():
@@ -107,31 +115,6 @@ def _get_agent_app():
             version="v2",
         )
     return _agent_app
-
-
-# ---------------------------------------------------------------------------
-# SERIALIZER
-# ---------------------------------------------------------------------------
-def make_json_serializable(obj):
-    if isinstance(obj, (date, datetime)):
-        return obj.isoformat()
-
-    if isinstance(obj, Decimal):
-        return float(obj)
-
-    if isinstance(obj, bytes):
-        try:
-            return obj.decode("utf-8")
-        except Exception:
-            return str(obj)
-
-    if isinstance(obj, dict):
-        return {k: make_json_serializable(v) for k, v in obj.items()}
-
-    if isinstance(obj, list):
-        return [make_json_serializable(i) for i in obj]
-
-    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +183,12 @@ def _execute_safe_sql(sql: str) -> dict[str, Any]:
             "sql": validated,
         }
     rows = make_json_serializable(res if isinstance(res, list) else [res])
-    return {"success": True, "results": rows, "row_count": len(rows), "sql": validated}
+    return {
+        "success": True,
+        "results": rows,
+        "row_count": len(rows),
+        "sql": select_sql_with_row_limit(validated),
+    }
 
 
 def _build_sub_response(question: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -517,8 +505,7 @@ def generate_and_execute_with_tools(
         )
     except Exception as e:
         error_str = str(e).lower()
-        # Explicit check for 429 / Quota / Resource Exhausted
-        if any(k in error_str for k in ("429", "resource_exhausted", "quota")):
+        if rate_limited(e):
             print(f"[AgentExecutor] Quota limit hit: {error_str}")
             return {
                 "sql_query": "",
@@ -532,6 +519,7 @@ def generate_and_execute_with_tools(
         raise
 
     messages = result.get("messages") or []
+    maybe_refresh_thread_memory_after_turn(tid, messages)
     summary = _summarize_from_messages(messages)
     if summary.get("status") == "success" and plan.get("assumptions"):
         summary["explanation"] = (

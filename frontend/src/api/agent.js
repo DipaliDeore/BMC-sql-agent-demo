@@ -37,7 +37,8 @@ export function mapMessagesForApi(messages) {
       return { role: "user", content: (m.content || "").trim() };
     }
     const text =
-      (m.explanation || m.content || m.errorText || "").trim() || "(assistant reply)";
+      (m.explanation || m.content || m.errorText || "").trim() ||
+      "(assistant reply)";
     return { role: "assistant", content: text };
   });
 }
@@ -55,31 +56,21 @@ export async function createChat(title) {
 }
 
 export async function getChatMessages(chatId) {
-  const response = await axios.get(`${API_BASE_URL}/api/chats/${chatId}/messages`);
+  const response = await axios.get(
+    `${API_BASE_URL}/api/chats/${chatId}/messages`,
+  );
   return response.data.messages || [];
 }
 
 export async function renameChat(chatId, title) {
-  const response = await axios.patch(`${API_BASE_URL}/api/chats/${chatId}`, { title });
+  const response = await axios.patch(`${API_BASE_URL}/api/chats/${chatId}`, {
+    title,
+  });
   return response.data;
 }
 
 export async function deleteChat(chatId) {
   await axios.delete(`${API_BASE_URL}/api/chats/${chatId}`);
-}
-
-/**
- * @param {string} question
- * @param {string} [conversationId]
- * @param {string} [preference]
- * @param {Array<{role:string,content:string}>|null} [messages] prior turns for the request body
- */
-export async function sendQuery(question, conversationId, preference = "AUTO", messages = null) {
-  const body = { question, preference };
-  if (conversationId) body.conversation_id = conversationId;
-  if (messages?.length) body.messages = messages;
-  const response = await axios.post(`${API_BASE_URL}/api/query`, body);
-  return response.data;
 }
 
 /**
@@ -97,7 +88,7 @@ export async function streamQuery(
   conversationId,
   preference = "AUTO",
   messages = null,
-  handlers = {}
+  handlers = {},
 ) {
   const { onEvent } = handlers;
   const body = { question, preference: preference || "AUTO" };
@@ -106,7 +97,10 @@ export async function streamQuery(
 
   const res = await fetch(`${API_BASE_URL}/api/query/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
     body: JSON.stringify(body),
   });
 
@@ -176,7 +170,12 @@ function getSessionId() {
 }
 
 // feedback can be: "up" or "down" only
-export async function submitFeedback(query, response, feedback, { sql = "" } = {}) {
+export async function submitFeedback(
+  query,
+  response,
+  feedback,
+  { sql = "" } = {},
+) {
   if (feedback !== "up" && feedback !== "down") {
     throw new Error("submitFeedback: feedback must be 'up' or 'down'");
   }
@@ -190,4 +189,3 @@ export async function submitFeedback(query, response, feedback, { sql = "" } = {
   const res = await axios.post(`${API_BASE_URL}/feedback`, payload);
   return res.data;
 }
-

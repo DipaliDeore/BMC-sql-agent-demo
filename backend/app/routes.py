@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse
 from app.excel_export import generate_excel
 
 from app import config
-from app.database import execute_query, get_database_schema
+from app.database import execute_query, get_database_schema, select_sql_with_row_limit
 from app.query_validator import validate_sql, QueryValidationError, is_dangerous_input
 from app.search import REFERENCE_TOP_K, find_similar_queries
 from app.agent_executor import generate_and_execute_with_tools
@@ -69,7 +69,6 @@ class QueryRequest(BaseModel):
     preference: str | None = "AUTO"  # "AUTO", "SINGLE", "MULTI"
     # Optional: full transcript from the client (stored server-side is authoritative)
     messages: list[ChatMessageItem] | None = None
-    
 
 
 class CreateChatBody(BaseModel):
@@ -127,24 +126,6 @@ def _assistant_payload_from_response(resp: QueryResponse) -> dict:
         "chart_config": resp.chart_config,
         "excel_download_url": resp.excel_download_url,
     }
-
-
-
-
-
-def _is_safe_reference(ex: dict) -> bool:
-    """
-    Return True if a cache reference row has SQL that passes the same
-    validator used for the main pipeline (SELECT-only, etc.).
-    """
-    try:
-        candidate_sql = (ex.get("sql") or "").strip()
-        if not candidate_sql:
-            return False
-        validate_sql(candidate_sql)
-        return True
-    except QueryValidationError:
-        return False
 
 
 # ── Endpoint 1: Test Database Connection ──────────────────────────────────────
@@ -205,172 +186,165 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
     if len(body.question) > config.MAX_QUERY_LENGTH:
         print(f"[WARN] Long query detected: {len(body.question)} chars")
 
-    pref = (body.preference or "AUTO").upper()
     loop = asyncio.get_running_loop()
-
-    # The LangGraph Agent now natively handles MULTI query parallelization.
-    # Therefore, we always bypass analyze_query and use the unified pipeline.
-    analysis = {"type": "SINGLE", "queries": [body.question]}
     similar_examples_raw = await loop.run_in_executor(None, find_similar_queries, body.question, REFERENCE_TOP_K)
 
-    # ── Unified path (SINGLE logic native multi tool-calling) ───────
-    if analysis["type"] == "SINGLE":
-        # Security: block destructive intent before any Gemini call (single input only).
-        if is_dangerous_input(body.question):
-            return QueryResponse(
-                question=body.question,
-                sql="",
-                results=[],
-                explanation="I can only look up data for you — I can't change or delete anything in the database. Try asking a read-only question (like counts, lists, or filters) and I'll help!",
-                row_count=0,
-                conversation_id=conversation_id,
-            )
+    # Unified NL→SQL path (multi-query handled inside LangGraph via parallel tool calls).
 
-        # Semantic cache: OpenSearch similarity for reference examples in the prompt.
-        # Results already fetched concurrently above — just filter for safety.
-        filtered_examples: list[dict] = []
-        for ex in similar_examples_raw:
-            try:
-                candidate_sql = (ex.get("sql") or "").strip()
-                if candidate_sql:
-                    validate_sql(candidate_sql)
-                    filtered_examples.append(ex)
-            except QueryValidationError:
-                continue
-
-        # Fast Path: bypass LLM if exact match is found
-        if filtered_examples and filtered_examples[0].get("score", 0.0) >= 0.99:
-            exact_match = filtered_examples[0]
-            exact_sql = exact_match["sql"]
-            db_res = execute_query(exact_sql)
-            if not (isinstance(db_res, dict) and "error" in db_res):
-                explanation = "I ran a matching query for your question and retrieved the results below."
-                narrative = build_results_narrative(db_res)
-                explanation = merge_explanation_with_narrative(explanation, narrative)
-                
-                return QueryResponse(
-                    question=body.question,
-                    sql=exact_sql,
-                    results=db_res,
-                    explanation=explanation,
-                    row_count=len(db_res),
-                    result_sentence=build_result_sentence(db_res, None),
-                    cache_references=filtered_examples or None,
-                    conversation_id=conversation_id,
-                    cache_doc_id=None,
-                    chart_config=None,
-                )
-
-        tool_result = generate_and_execute_with_tools(
-            body.question,
-            schema,
-            filtered_examples or None,
-            thread_id=conversation_id,
+    # Security: block destructive intent before any Gemini call (single input only).
+    if is_dangerous_input(body.question):
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            explanation="I can only look up data for you — I can't change or delete anything in the database. Try asking a read-only question (like counts, lists, or filters) and I'll help!",
+            row_count=0,
+            conversation_id=conversation_id,
         )
 
-        
+    # Semantic cache: OpenSearch similarity for reference examples in the prompt.
+    # Results already fetched concurrently above — just filter for safety.
+    filtered_examples: list[dict] = []
+    for ex in similar_examples_raw:
+        try:
+            candidate_sql = (ex.get("sql") or "").strip()
+            if candidate_sql:
+                validate_sql(candidate_sql)
+                filtered_examples.append(ex)
+        except QueryValidationError:
+            continue
 
-        if tool_result["status"] == "db_error":
+    # Fast Path: bypass LLM if exact match is found
+    if filtered_examples and filtered_examples[0].get("score", 0.0) >= 0.99:
+        exact_match = filtered_examples[0]
+        exact_sql = exact_match["sql"]
+        db_res = execute_query(exact_sql)
+        if not (isinstance(db_res, dict) and "error" in db_res):
+            explanation = "I ran a matching query for your question and retrieved the results below."
+            narrative = build_results_narrative(db_res)
+            explanation = merge_explanation_with_narrative(explanation, narrative)
+            
             return QueryResponse(
                 question=body.question,
-                sql="",
-                results=[],
-                row_count=0,
-                explanation=tool_result["explanation"],
+                sql=select_sql_with_row_limit(exact_sql),
+                results=db_res,
+                explanation=explanation,
+                row_count=len(db_res),
+                result_sentence=build_result_sentence(db_res, None),
+                cache_references=filtered_examples or None,
                 conversation_id=conversation_id,
+                cache_doc_id=None,
+                chart_config=None,
             )
 
-        if tool_result["status"] == "not_related":
-            return QueryResponse(
-                question=body.question,
-                sql="",
-                results=[],
-                row_count=0,
-                explanation=tool_result["explanation"],
-                conversation_id=conversation_id,
-            )
+    tool_result = generate_and_execute_with_tools(
+        body.question,
+        schema,
+        filtered_examples or None,
+        thread_id=conversation_id,
+    )
 
-        if tool_result["status"] == "sql_error":
-            return QueryResponse(
-                question=body.question,
-                sql="",
-                results=[],
-                row_count=0,
-                explanation="Sorry, could not generate a valid query. Please try rephrasing.",
-                conversation_id=conversation_id,
-            )
+    
 
-        if tool_result["status"] == "rate_limited":
-            return QueryResponse(
-                question=body.question,
-                sql="",
-                results=[],
-                row_count=0,
-                explanation=tool_result["explanation"],
-                conversation_id=conversation_id,
-            )
+    if tool_result["status"] == "db_error":
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            row_count=0,
+            explanation=tool_result["explanation"],
+            conversation_id=conversation_id,
+        )
 
-        if tool_result.get("is_multi"):
-            return QueryResponse(
-                question=body.question,
-                sql="",
-                results=[],
-                explanation=tool_result["explanation"],
-                row_count=0,
-                conversation_id=conversation_id,
-                is_multi=True,
-                sub_responses=tool_result.get("sub_responses", []),
-            )
+    if tool_result["status"] == "not_related":
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            row_count=0,
+            explanation=tool_result["explanation"],
+            conversation_id=conversation_id,
+        )
 
-        result = tool_result["results"]
-        safe_sql = tool_result["sql_query"]
-        explanation = tool_result["explanation"]
-        answer_template = tool_result.get("answer_template")
+    if tool_result["status"] == "sql_error":
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            row_count=0,
+            explanation="Sorry, could not generate a valid query. Please try rephrasing.",
+            conversation_id=conversation_id,
+        )
 
-        if not result:
-            return QueryResponse(
-                question=body.question,
-                sql=safe_sql,
-                results=[],
-                row_count=0,
-                explanation="I ran the query but nothing matched. Try broadening your filters.",
-                conversation_id=conversation_id,
-            )
+    if tool_result["status"] == "rate_limited":
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            row_count=0,
+            explanation=tool_result["explanation"],
+            conversation_id=conversation_id,
+        )
 
-        # Semantic cache writes only via POST /feedback (thumbs up); do not auto-index every reply.
-        row_count = len(result)
+    if tool_result.get("is_multi"):
+        return QueryResponse(
+            question=body.question,
+            sql="",
+            results=[],
+            explanation=tool_result["explanation"],
+            row_count=0,
+            conversation_id=conversation_id,
+            is_multi=True,
+            sub_responses=tool_result.get("sub_responses", []),
+        )
 
-        excel_download_url = None
+    result = tool_result["results"]
+    safe_sql = tool_result["sql_query"]
+    explanation = tool_result["explanation"]
+    answer_template = tool_result.get("answer_template")
 
-        if row_count > 0:
-            try:
-                filepath = generate_excel(result)
-                filename = os.path.basename(filepath)
-                excel_download_url = f"/api/export/{filename}"
-            except Exception as e:
-                print(f"[ExcelExport] Failed: {e}")
-                excel_download_url = None
-
-        inline_results = result if row_count <= config.EXCEL_INLINE_LIMIT else []
-
-        narrative = build_results_narrative(result)
-        explanation = merge_explanation_with_narrative(explanation, narrative)
-
+    if not result:
         return QueryResponse(
             question=body.question,
             sql=safe_sql,
-            results=inline_results,
-            explanation=explanation,
-            row_count=row_count,
-            result_sentence=build_result_sentence(result, answer_template),
-            cache_references=filtered_examples or None,
+            results=[],
+            row_count=0,
+            explanation="I ran the query but nothing matched. Try broadening your filters.",
             conversation_id=conversation_id,
-            cache_doc_id=None,
-            chart_config=tool_result.get("chart_config"),
-            excel_download_url=excel_download_url,
         )
 
+    # Semantic cache writes only via POST /feedback (thumbs up); do not auto-index every reply.
+    row_count = len(result)
 
+    excel_download_url = None
+
+    if row_count > 0:
+        try:
+            filepath = generate_excel(result)
+            filename = os.path.basename(filepath)
+            excel_download_url = f"/api/export/{filename}"
+        except Exception as e:
+            print(f"[ExcelExport] Failed: {e}")
+            excel_download_url = None
+
+    inline_results = result if row_count <= config.EXCEL_INLINE_LIMIT else []
+
+    narrative = build_results_narrative(result)
+    explanation = merge_explanation_with_narrative(explanation, narrative)
+
+    return QueryResponse(
+        question=body.question,
+        sql=safe_sql,
+        results=inline_results,
+        explanation=explanation,
+        row_count=row_count,
+        result_sentence=build_result_sentence(result, answer_template),
+        cache_references=filtered_examples or None,
+        conversation_id=conversation_id,
+        cache_doc_id=None,
+        chart_config=tool_result.get("chart_config"),
+        excel_download_url=excel_download_url,
+    )
 
 
 @router.post("/query", response_model=QueryResponse)

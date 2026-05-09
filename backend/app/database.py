@@ -16,6 +16,20 @@ from app import config
 from app.serialization import make_json_serializable
 
 
+def select_sql_with_row_limit(inner_sql: str) -> str:
+    """
+    Wrap a validated single SELECT in an outer LIMIT so the engine returns at most
+    MAX_RESULT_ROWS rows (TiDB / MySQL).
+    """
+    n = getattr(config, "MAX_RESULT_ROWS", 100)
+    if n <= 0:
+        return inner_sql.strip().rstrip(";")
+    stripped = inner_sql.strip().rstrip(";")
+    if not stripped:
+        return inner_sql
+    return f"SELECT * FROM (\n{stripped}\n) AS _agent_row_cap LIMIT {int(n)}"
+
+
 # ---------------------------------------------------------------------------
 # 1. get_db_connection
 # ---------------------------------------------------------------------------
@@ -87,8 +101,9 @@ def execute_query(sql_query: str):
         # Step 2: Create a cursor that returns rows as dictionaries
         cursor = connection.cursor(dictionary=True)
 
-        # Step 3: Run the query
-        cursor.execute(sql_query)
+        # Step 3: Run the query (always capped at MAX_RESULT_ROWS)
+        sql_exec = select_sql_with_row_limit(sql_query)
+        cursor.execute(sql_exec)
 
         # Step 4: Fetch rows in chunks (avoids one huge fetchall buffer)
         results: list[dict] = []
@@ -134,13 +149,19 @@ def iter_query_rows(sql_query: str, *, batch_size: int = 200):
     try:
         connection = get_db_connection()
         cursor = connection.cursor(dictionary=True)
-        cursor.execute(sql_query)
+        sql_exec = select_sql_with_row_limit(sql_query)
+        cursor.execute(sql_exec)
+        max_rows = getattr(config, "MAX_RESULT_ROWS", 100)
+        yielded = 0
         while True:
             batch = cursor.fetchmany(batch_size)
             if not batch:
                 break
             for row in batch:
+                if max_rows > 0 and yielded >= max_rows:
+                    return
                 yield make_json_serializable(row)
+                yielded += 1
     finally:
         if cursor:
             cursor.close()

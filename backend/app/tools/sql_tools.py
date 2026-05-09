@@ -15,7 +15,7 @@ import re
 
 from langchain_core.tools import tool
 from app.query_validator import validate_sql, QueryValidationError
-from app.database import execute_query
+from app.database import execute_query, select_sql_with_row_limit
 
 
 # Keywords that indicate database connectivity failure — not SQL mistake
@@ -207,7 +207,7 @@ def run_sql_query(sql: str) -> dict:
         "success": True,
         "results": safe_results,
         "row_count": len(safe_results),
-        "sql": validated_sql
+        "sql": select_sql_with_row_limit(validated_sql),
     }
 
 @tool

@@ -54,4 +54,21 @@ MAX_ANALYSIS_CACHE_SIZE = int(os.getenv("MAX_ANALYSIS_CACHE_SIZE", "100"))
 # Excel export thresholds
 EXCEL_INLINE_LIMIT = int(os.getenv("EXCEL_INLINE_LIMIT", "100"))
 
+# Cap rows returned from any agent SELECT (wrapped as subquery + LIMIT).
+MAX_RESULT_ROWS = int(os.getenv("MAX_RESULT_ROWS", "100"))
+
+# Hybrid conversation memory (LangGraph prompt view + bmcs_thread_memory)
+HYBRID_MEMORY_ENABLED = os.getenv("HYBRID_MEMORY_ENABLED", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+RECENT_MESSAGE_CAP = int(os.getenv("RECENT_MESSAGE_CAP", "30"))
+SUMMARY_TRIGGER_MESSAGES = int(os.getenv("SUMMARY_TRIGGER_MESSAGES", "60"))
+MAX_CONTEXT_TOKENS_SOFT = int(os.getenv("MAX_CONTEXT_TOKENS_SOFT", "120000"))
+SUMMARY_MAX_CHARS = int(os.getenv("SUMMARY_MAX_CHARS", "8000"))
+STRUCTURED_MEMORY_JSON_MAX_CHARS = int(os.getenv("STRUCTURED_MEMORY_JSON_MAX_CHARS", "4000"))
+TOOL_DIGEST_MAX_CHARS = int(os.getenv("TOOL_DIGEST_MAX_CHARS", "6000"))
+MEMORY_SUMMARY_DEBOUNCE_MESSAGES = int(os.getenv("MEMORY_SUMMARY_DEBOUNCE_MESSAGES", "8"))
+
 

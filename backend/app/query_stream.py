@@ -21,12 +21,12 @@ import uuid
 import functools
 import os
 from app.excel_export import generate_excel
-from app import config
 from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 from app import chat_store, config
+from app.llm_errors import rate_limited
 from app.agent_executor import (
     _build_references_text,
     _get_agent_app,
@@ -34,7 +34,8 @@ from app.agent_executor import (
     _summarize_from_messages,
     generate_and_execute_with_tools,
 )
-from app.database import get_database_schema
+from app.database import execute_query, get_database_schema, select_sql_with_row_limit
+from app.memory.pipeline import maybe_refresh_thread_memory_after_turn
 from app.question_planner import build_question_plan
 from app.query_validator import QueryValidationError, validate_sql, is_dangerous_input
 from app.response_formatting import (
@@ -51,10 +52,6 @@ def _sse_data(obj: dict) -> bytes:
 def encode_sse(obj: dict) -> bytes:
     """Public alias for SSE framing (used by routes for one-shot streams)."""
     return _sse_data(obj)
-
-def _rate_limited(e: Exception) -> bool:
-    error_str = str(e).lower()
-    return any(k in error_str for k in ("429", "resource_exhausted", "quota"))
 
 
 def _text_delta_from_llm_chunk(msg: Any) -> str:
@@ -130,6 +127,7 @@ async def _stream_react_agent(
     references: list[dict] | None,
     thread_id: str,
     cfg_recursion: int = 12,
+    plan_json: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     app = _get_agent_app()
     references_text = _build_references_text(references or [])
@@ -138,6 +136,7 @@ async def _stream_react_agent(
             "thread_id": thread_id,
             "schema": schema,
             "references_text": references_text,
+            "plan_json": plan_json or "{}",
         },
         "recursion_limit": cfg_recursion,
     }
@@ -201,7 +200,7 @@ async def _stream_react_agent(
                             for row in data["results"]:
                                 yield {"type": "data", "content": row}
     except Exception as e:
-        if _rate_limited(e):
+        if rate_limited(e):
             yield {
                 "type": "error",
                 "content": "The AI service quota has been reached. Please wait a few minutes or try again later.",
@@ -219,6 +218,8 @@ async def _stream_react_agent(
         messages = []
     if not messages and last_values is not None:
         messages = last_values.get("messages") or []
+
+    await asyncio.to_thread(maybe_refresh_thread_memory_after_turn, thread_id, messages)
 
     summary = _summarize_from_messages(messages)
     yield {"type": "status", "content": "done"}
@@ -429,20 +430,20 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
 
     # Fast Path: exact cache match bypasses LLM to save quota
     if tool_result is None and cache_refs and cache_refs[0].get("score", 0.0) >= 0.99:
-        from app.database import execute_query
         exact_sql = cache_refs[0]["sql"]
+        limited_sql = select_sql_with_row_limit(exact_sql)
         yield _sse_data({"type": "status", "content": "executing_sql"})
-        yield _sse_data({"type": "sql", "content": exact_sql})
-        
+        yield _sse_data({"type": "sql", "content": limited_sql})
+
         try:
             db_res = await loop.run_in_executor(None, execute_query, exact_sql)
             if not (isinstance(db_res, dict) and "error" in db_res):
                 for row_data in db_res:
                     yield _sse_data({"type": "data", "content": row_data})
-                
+
                 tool_result = {
                     "status": "success",
-                    "sql_query": exact_sql,
+                    "sql_query": limited_sql,
                     "results": db_res,
                     "explanation": "I ran a matching query for your question and retrieved the results below.",
                     "row_count": len(db_res),
@@ -457,7 +458,13 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
 
     if tool_result is None:
         try:
-            stream = _stream_react_agent(question, schema, cache_refs or None, conversation_id)
+            stream = _stream_react_agent(
+                question,
+                schema,
+                cache_refs or None,
+                conversation_id,
+                plan_json=json.dumps(plan),
+            )
             async for ev in stream:
                 if ev.get("type") == "error":
                     yield _sse_data(ev)

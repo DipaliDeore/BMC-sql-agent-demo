@@ -292,10 +292,12 @@ button:focus:not(:focus-visible) {
   display: flex;
   align-items: flex-end;
   gap: 10px;
-  padding: 10px 12px 10px 18px;
+  min-width: 0;
+  /* Gentler than full pill (~5px less aggressive than stadium caps); padding clears the arc. */
+  padding: 10px 16px 10px 28px;
   background: var(--glass-bg);
   border: 1px solid var(--border);
-  border-radius: var(--radius-full);
+  border-radius: calc(var(--radius-lg) + 4px);
   box-shadow: var(--shadow-md);
   transition:
     border-color 0.2s var(--ease-out),
@@ -311,6 +313,7 @@ button:focus:not(:focus-visible) {
 
 .chat-composer textarea {
   flex: 1;
+  min-width: 0;
   min-height: 24px;
   max-height: 200px;
   padding: 8px 0;
@@ -322,6 +325,9 @@ button:focus:not(:focus-visible) {
   resize: none;
   font-family: inherit;
   outline: none;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  overflow-y: auto;
 }
 
 .chat-composer textarea::placeholder {

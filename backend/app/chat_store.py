@@ -68,6 +68,15 @@ def init_chat_schema() -> None:
         CREATE INDEX IF NOT EXISTS idx_bmcs_chat_messages_chat_id
             ON bmcs_chat_messages (chat_id, id)
         """,
+        """
+        CREATE TABLE IF NOT EXISTS bmcs_thread_memory (
+            thread_id TEXT PRIMARY KEY,
+            conversation_summary TEXT NOT NULL DEFAULT '',
+            structured_memory JSONB NOT NULL DEFAULT '{}'::jsonb,
+            last_summarized_at_message_count INT NOT NULL DEFAULT 0,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
     ]
     with pool.connection() as conn:
         with conn.cursor() as cur:

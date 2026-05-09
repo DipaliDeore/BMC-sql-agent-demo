@@ -18,13 +18,13 @@ Built with **FastAPI + LangChain + Google Gemini** on the backend and **React + 
 
 ## 🛠️ Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Backend | Python, FastAPI, LangChain |
-| AI | Google Gemini (`gemini-flash-latest`) |
-| Database | TiDB Cloud (MySQL-compatible) |
-| Frontend | React 18, Vite, Tailwind CSS |
-| HTTP Client | Axios |
+| Layer       | Technology                            |
+| ----------- | ------------------------------------- |
+| Backend     | Python, FastAPI, LangChain            |
+| AI          | Google Gemini (`gemini-flash-latest`) |
+| Database    | TiDB Cloud (MySQL-compatible)         |
+| Frontend    | React 18, Vite, Tailwind CSS          |
+| HTTP Client | Axios                                 |
 
 ---
 
@@ -141,15 +141,17 @@ DB_NAME=sql_agent_demo
 
 > ⚠️ **Never commit `.env` to version control.** Add it to `.gitignore`.
 
+Optional **hybrid conversation memory** (bounded LLM context): set `HYBRID_MEMORY_ENABLED=true` and see **[docs/MEMORY.md](docs/MEMORY.md)** for all related env vars and Postgres table `bmcs_thread_memory`.
+
 ---
 
 ## 📡 API Reference
 
-| Method | URL | Description |
-|--------|-----|-------------|
-| `GET` | `/health` | Server health check |
-| `POST` | `/api/query` | Submit a natural language question |
-| `GET` | `/api/schema` | View database schema |
+| Method | URL           | Description                        |
+| ------ | ------------- | ---------------------------------- |
+| `GET`  | `/health`     | Server health check                |
+| `POST` | `/api/query`  | Submit a natural language question |
+| `GET`  | `/api/schema` | View database schema               |
 
 ---
 
@@ -157,7 +159,7 @@ DB_NAME=sql_agent_demo
 
 Once your database has tables, try questions like:
 
-- *"Show me the top 10 customers by total orders"*
-- *"How many orders were placed this month?"*
-- *"List all products with a price greater than $50"*
-- *"What is the average order value per region?"*
+- _"Show me the top 10 customers by total orders"_
+- _"How many orders were placed this month?"_
+- _"List all products with a price greater than $50"_
+- _"What is the average order value per region?"_
