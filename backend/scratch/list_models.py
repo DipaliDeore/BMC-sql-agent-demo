@@ -1,5 +1,6 @@
 import os
 import google.generativeai as genai
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))

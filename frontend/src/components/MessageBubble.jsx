@@ -7,6 +7,8 @@ import ResultTable from "./ResultTable";
 import SqlViewer from "./SqlViewer";
 import MessageFeedback from "./MessageFeedback";
 import PieChartViewer from "./PieChartViewer";
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 export default function MessageBubble({ message, theme, pairedUserQuery = "" }) {
   const feedbackQuery = (pairedUserQuery || message.original_question || "").trim();
@@ -42,16 +44,14 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
 
           {message.streamText ? (
             <div
-              className="msg-body"
+              className="msg-body markdown-wrapper"
               style={{
-                whiteSpace: "pre-wrap",
                 fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
                 fontSize: "13px",
                 lineHeight: 1.45,
               }}
             >
-              {message.streamText}
-              <span style={{ opacity: 0.35 }}>▍</span>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.streamText + "▍"}</ReactMarkdown>
             </div>
           ) : null}
 
@@ -91,8 +91,8 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
       <div className="msg-animate" style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
         <div className="assistant-msg-panel" style={{ width: "100%" }}>
           {message.explanation && (
-            <div className="msg-body" style={{ marginBottom: "1.15rem" }}>
-              {message.explanation}
+            <div className="msg-body markdown-wrapper" style={{ marginBottom: "1.15rem" }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.explanation}</ReactMarkdown>
             </div>
           )}
 
@@ -119,9 +119,9 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
               </p>
 
               {sub.explanation && (
-                <p className="msg-body" style={{ marginBottom: "14px" }}>
-                  {sub.explanation}
-                </p>
+                <div className="msg-body markdown-wrapper" style={{ marginBottom: "14px" }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{sub.explanation}</ReactMarkdown>
+                </div>
               )}
 
               {sub.chart_config?.is_pie_chart && sub.results && sub.results.length > 0 && (
@@ -160,8 +160,8 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
     <div className="msg-animate" style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
       <div className="assistant-msg-panel">
         {message.explanation && (
-          <div className="msg-body" style={{ marginBottom: message.result_sentence || message.results?.length || message.excel_download_url ? "14px" : 0 }}>
-            {message.explanation}
+          <div className="msg-body markdown-wrapper" style={{ marginBottom: message.result_sentence || message.results?.length || message.excel_download_url ? "14px" : 0 }}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.explanation}</ReactMarkdown>
           </div>
         )}
 

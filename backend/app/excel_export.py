@@ -11,8 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+# pyrefly: ignore [missing-import]
 import openpyxl
+# pyrefly: ignore [missing-import]
 from openpyxl.styles import Font, PatternFill, Alignment
+# pyrefly: ignore [missing-import]
 from openpyxl.utils import get_column_letter
 
 

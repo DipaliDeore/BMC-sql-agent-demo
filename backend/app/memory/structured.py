@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app import config
+# pyrefly: ignore [missing-import]
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 
@@ -34,7 +35,7 @@ def extract_structured_memory(
     """
     LLM extracts small JSON facts: sql_dialect, business_context, user_preferences, etc.
     """
-    key = (config.GEMINI_API_KEY or "").strip()
+    key = (config.SUMMARY_GEMINI_API_KEY or "").strip()
     if not key or not transcript_snippet.strip():
         return {}
 

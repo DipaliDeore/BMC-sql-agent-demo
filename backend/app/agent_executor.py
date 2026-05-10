@@ -3,9 +3,13 @@ import json
 import uuid
 from typing import Any
 
+# pyrefly: ignore [missing-import]
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+# pyrefly: ignore [missing-import]
 from langchain_core.runnables import RunnableConfig, RunnableLambda
+# pyrefly: ignore [missing-import]
 from langchain_google_genai import ChatGoogleGenerativeAI
+# pyrefly: ignore [missing-import]
 from langgraph.prebuilt import create_react_agent
 
 from app.tools.sql_tools import run_sql_query, render_pie_chart
@@ -16,6 +20,7 @@ from app.serialization import make_json_serializable
 from app.response_formatting import (
     build_result_sentence,
     build_results_narrative,
+    merge_explanation_with_narrative,
 )
 from app.question_planner import build_question_plan
 from app.query_validator import validate_sql, QueryValidationError
@@ -41,7 +46,7 @@ def _get_llm() -> ChatGoogleGenerativeAI:
     global _llm
     if _llm is None:
         _llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash-lite",
+            model="gemini-2.5-flash",
             google_api_key=config.GEMINI_API_KEY,
             temperature=0,
         )
@@ -55,6 +60,21 @@ def _prepend_system(state: dict, config: RunnableConfig) -> list:
     plan_json = conf.get("plan_json") or "{}"
     tid = (conf.get("thread_id") or "").strip()
     memory_block = build_memory_preamble_for_system(tid)
+    try:
+        plan = json.loads(plan_json)
+        needs_pie_chart = plan.get("needs_pie_chart", False)
+    except Exception:
+        needs_pie_chart = False
+
+    pie_chart_instruction = ""
+    if needs_pie_chart:
+        pie_chart_instruction = """
+- PLANNER INSTRUCTION: This query requires a pie chart! You MUST use the `render_pie_chart` tool, but do it in TWO SEQUENTIAL STEPS:
+  Step 1: Call `run_sql_query` first and wait for the result.
+  Step 2: After seeing the SQL result, call `render_pie_chart` using the exact column names from the data you just received.
+  DO NOT put chart arguments into `run_sql_query`, and DO NOT try to call both tools at the exact same time.
+"""
+
     system_content = f"""You are an expert SQL query generator for a MySQL database.
 
 YOUR TASK:
@@ -68,17 +88,16 @@ YOUR TASK:
 
 STRICT RULES:
 - Max 6 tool calls
-- If the user asks for multiple distinct datasets or questions (e.g. 'How many customers and what are the top 3 products?'), you MUST explicitly make MULTIPLE PARALLEL tool calls at the exact same time by outputting an array with multiple run_sql_query calls. Do not process them one by one.
-- If the result inherently makes sense as a PIE CHART (e.g. visualizing distribution, percentages, parts of a whole, group by counts/sums), you MUST explicitly make PARALLEL tool calls to BOTH `run_sql_query` AND `render_pie_chart` at the exact same time. You do not need the user to explicitly say 'pie chart'. For `render_pie_chart`, provide the correct `label_column` and `value_column` matching exactly what your SQL returns.
+- If the user asks for multiple distinct datasets or questions (e.g. 'How many customers and what are the top 3 products?'), you MUST explicitly make MULTIPLE PARALLEL tool calls at the exact same time by outputting an array with multiple run_sql_query calls. Do not process them one by one.{pie_chart_instruction}
 - If DB_ERROR → STOP immediately
 - If SQL_ERROR → fix and retry (max 2 retries)
-- After success → provide a clear, user-friendly explanation in plain English (no further tool calls needed)
-- Never return raw numbers without context; explain what each value represents
-- If multiple values are returned, label each value clearly
-- Do not mention memory/cache retrieval unless the user explicitly asks
-- Keep the final explanation concise (typically 2-5 lines)
-- If assumptions/defaults were used, mention them briefly
-- If one part fails, still report successful parts
+- After successfully executing queries, provide your final response based on the planner strategy:
+   * IF 'strategic_mode': You MUST act as a senior data analyst. Review the data returned, identify trends/anomalies, and provide a DETAILED, ACTIONABLE recommendation (at least 2-3 detailed paragraphs). Explain the 'why' behind the numbers and what the business should do next. Do NOT be concise; provide depth and insight.
+   * OTHERWISE: Keep the final explanation concise (typically 2-5 lines).
+- Never return raw numbers without context; explain what each value represents.
+- If multiple values are returned, label each value clearly.
+- Do not mention memory/cache retrieval unless the user explicitly asks.
+- If one part fails, still report successful parts.
 
 SQL RULES:
 - ONLY SELECT queries
@@ -137,7 +156,9 @@ def extract_text(content):
     if isinstance(content, list):
         texts = []
         for item in content:
-            if isinstance(item, dict) and "text" in item:
+            if isinstance(item, str):
+                texts.append(item)
+            elif isinstance(item, dict) and "text" in item:
                 texts.append(item["text"])
         return " ".join(texts)
 
@@ -165,7 +186,14 @@ def _parse_tool_content(msg: ToolMessage) -> dict:
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        return {}
+        import ast
+        try:
+            parsed = ast.literal_eval(raw)
+            if isinstance(parsed, dict):
+                return parsed
+            return {}
+        except (ValueError, SyntaxError):
+            return {}
 
 
 def _execute_safe_sql(sql: str) -> dict[str, Any]:
@@ -211,75 +239,6 @@ def _build_sub_response(question: str, data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _strategic_mode_response() -> dict[str, Any]:
-    analyses: list[tuple[str, str]] = [
-        (
-            "Monthly sales trend",
-            "SELECT DATE_FORMAT(o.order_date, '%Y-%m') AS month, "
-            "SUM(oi.quantity * oi.price_at_purchase) AS sales "
-            "FROM orders o JOIN order_items oi ON oi.order_id = o.order_id "
-            "GROUP BY DATE_FORMAT(o.order_date, '%Y-%m') ORDER BY month DESC LIMIT 12",
-        ),
-        (
-            "Top products by revenue",
-            "SELECT p.name AS product_name, SUM(oi.quantity * oi.price_at_purchase) AS revenue "
-            "FROM order_items oi JOIN products p ON p.product_id = oi.product_id "
-            "GROUP BY p.product_id, p.name ORDER BY revenue DESC LIMIT 10",
-        ),
-        (
-            "High demand but low stock risk",
-            "WITH demand AS (SELECT product_id, SUM(quantity) AS units_ordered FROM order_items GROUP BY product_id), "
-            "stock AS (SELECT product_id, SUM(stock) AS stock FROM warehouse_inventory GROUP BY product_id), "
-            "joined AS (SELECT d.product_id, d.units_ordered, COALESCE(s.stock, 0) AS stock FROM demand d LEFT JOIN stock s ON s.product_id = d.product_id) "
-            "SELECT p.name AS product_name, j.units_ordered, j.stock "
-            "FROM joined j JOIN products p ON p.product_id = j.product_id "
-            "WHERE j.units_ordered >= (SELECT AVG(units_ordered) FROM joined) "
-            "AND j.stock <= (SELECT AVG(stock) FROM joined) "
-            "ORDER BY j.units_ordered DESC, j.stock ASC LIMIT 10",
-        ),
-    ]
-    sub_responses: list[dict[str, Any]] = []
-    failures = 0
-    for title, sql in analyses:
-        result = _execute_safe_sql(sql)
-        if result.get("success"):
-            sub_responses.append(_build_sub_response(title, result))
-        else:
-            failures += 1
-            sub_responses.append(
-                {
-                    "question": title,
-                    "sql": sql,
-                    "explanation": f"I could not complete this analysis: {result.get('error', 'Unknown error')}",
-                    "results": [],
-                    "row_count": 0,
-                    "result_sentence": "",
-                    "cache_references": [],
-                    "status": (result.get("error_type") or "sql_error").lower(),
-                    "cache_doc_id": None,
-                    "chart_config": None,
-                }
-            )
-
-    summary = (
-        "Result: I analyzed trend, product concentration, and stock-risk signals from your data.\n\n"
-        "Meaning: These views show where revenue is strongest and where demand might be constrained by inventory.\n\n"
-        "Next action: Prioritize inventory for high-demand low-stock products, promote high-margin top sellers, "
-        "and track month-over-month shifts for early intervention."
-    )
-    if failures:
-        summary += f"\n\nNote: {failures} analysis block(s) could not be completed and are labeled below."
-
-    return {
-        "sql_query": "",
-        "explanation": summary,
-        "results": [],
-        "row_count": 0,
-        "status": "success",
-        "is_multi": True,
-        "sub_responses": sub_responses,
-    }
-
 
 def _last_human_index(messages: list) -> int:
     for i in range(len(messages) - 1, -1, -1):
@@ -297,7 +256,7 @@ def _summarize_from_messages(messages: list) -> dict:
     last_ai_text = ""
     successful_tools = []
     failed_tools = []
-    pie_chart_config = None
+    pie_chart_configs = []
 
     for msg in tail:
         if isinstance(msg, ToolMessage):
@@ -313,31 +272,48 @@ def _summarize_from_messages(messages: list) -> dict:
                 }
             if data.get("success") is True:
                 if data.get("is_pie_chart") is True:
-                    pie_chart_config = {
+                    pie_chart_configs.append({
                         "is_pie_chart": True,
                         "label_column": data.get("label_column"),
                         "value_column": data.get("value_column"),
-                    }
+                    })
                 else:
                     successful_tools.append(data)
             elif data.get("error"):
                 failed_tools.append(data)
         elif isinstance(msg, AIMessage):
-            last_ai_text = extract_text(msg.content)
+            txt = extract_text(msg.content).strip()
+            if txt:
+                last_ai_text = txt
+
+    def _find_matching_chart(rows, configs):
+        if not rows or not configs:
+            return None
+        first_row = rows[0]
+        for conf in configs:
+            if conf.get("label_column") in first_row and conf.get("value_column") in first_row:
+                return conf
+        return None
 
     if len(successful_tools) == 1 and not failed_tools:
         data = successful_tools[0]
         rows = make_json_serializable(data.get("results") or [])
         if not isinstance(rows, list):
             rows = [rows]
+
+        narrative = build_results_narrative(rows)
+        explanation = merge_explanation_with_narrative(last_ai_text.strip(), narrative)
+        if not explanation:
+            explanation = _build_success_explanation(len(rows))
+
         return {
             "sql_query": (data.get("sql") or "").strip(),
-            "explanation": _build_success_explanation(len(rows)),
+            "explanation": explanation,
             "results": rows,
             "row_count": len(rows),
             "status": "success",
             "is_multi": False,
-            "chart_config": pie_chart_config,
+            "chart_config": _find_matching_chart(rows, pie_chart_configs),
         }
 
     elif len(successful_tools) > 1 or (successful_tools and failed_tools):
@@ -358,7 +334,7 @@ def _summarize_from_messages(messages: list) -> dict:
                 "cache_references": [],
                 "status": "success",
                 "cache_doc_id": None,
-                "chart_config": pie_chart_config if i == 0 else None
+                "chart_config": _find_matching_chart(rows, pie_chart_configs)
             })
 
         for i, data in enumerate(failed_tools):
@@ -380,7 +356,7 @@ def _summarize_from_messages(messages: list) -> dict:
             )
         return {
             "sql_query": "",
-            "explanation": (
+            "explanation": last_ai_text.strip() or (
                 f"I processed {len(successful_tools)} part(s) of your request successfully. "
                 "Any part that could not be executed is clearly labeled below with the reason."
             ),
@@ -483,9 +459,6 @@ def generate_and_execute_with_tools(
                     ],
                 }
 
-    if plan.get("strategy") == "strategic_mode":
-        return _strategic_mode_response()
-
     tid = (thread_id or "").strip() or str(uuid.uuid4())
     app = _get_agent_app()
     cfg: RunnableConfig = {
@@ -495,7 +468,7 @@ def generate_and_execute_with_tools(
             "references_text": references_text,
             "plan_json": json.dumps(plan),
         },
-        "recursion_limit": 4,
+        "recursion_limit": 15,
     }
 
     try:

@@ -58,7 +58,7 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
         intents.append("breakdown")
     if _contains_any(ql, ["vs", "versus", "compare", "top ", "bottom ", "growth", "decline", "trend"]):
         intents.append("comparative_or_trend")
-    if _contains_any(ql, ["increase sales", "focus on", "why did", "recommend", "improve"]):
+    if _contains_any(ql, ["increase sales", "focus on", "why did", "recommend", "improve", "analyze", "analysis", "insight", "how to", "what should"]):
         intents.append("strategic_recommendation")
     if _contains_any(ql, ["low stock", "warehouse", "delayed", "churn", "high demand", "frequently ordered"]):
         intents.append("operational_alert")
@@ -123,6 +123,8 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
             f"Interpreting month window as month {month_window[0]} through month {month_window[1]}."
         )
 
+    needs_pie_chart = _contains_any(ql, ["pie chart", "pie", "distribution", "breakdown", "proportion"]) or "breakdown" in intents
+
     return {
         "question": q,
         "intents": intents or ["direct_metric"],
@@ -130,4 +132,5 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
         "assumptions": assumptions,
         "strategy": strategy,
         "deterministic_sql": deterministic_sql,
+        "needs_pie_chart": needs_pie_chart,
     }

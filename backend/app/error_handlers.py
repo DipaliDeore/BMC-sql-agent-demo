@@ -10,8 +10,11 @@ Handlers:
     2. RequestValidationError → 422 Invalid Request
 """
 
+# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, Request
+# pyrefly: ignore [missing-import]
 from fastapi.responses import JSONResponse
+# pyrefly: ignore [missing-import]
 from fastapi.exceptions import RequestValidationError
 
 

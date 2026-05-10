@@ -16,13 +16,18 @@ Also see ``app.services.feedback_service``: POST /feedback (thumbs up/down) at a
 
 import asyncio
 import uuid
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, HTTPException
+# pyrefly: ignore [missing-import]
 from fastapi.responses import StreamingResponse
+# pyrefly: ignore [missing-import]
 from pydantic import BaseModel, Field, field_validator
+# pyrefly: ignore [missing-import]
 from langsmith import traceable
 
 import os
 from pathlib import Path
+# pyrefly: ignore [missing-import]
 from fastapi.responses import FileResponse
 from app.excel_export import generate_excel
 

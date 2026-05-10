@@ -13,6 +13,7 @@ from datetime import date, datetime
 from decimal import Decimal
 import re
 
+# pyrefly: ignore [missing-import]
 from langchain_core.tools import tool
 from app.query_validator import validate_sql, QueryValidationError
 from app.database import execute_query, select_sql_with_row_limit
@@ -223,3 +224,4 @@ def render_pie_chart(label_column: str, value_column: str) -> dict:
         "label_column": label_column,
         "value_column": value_column
     }
+

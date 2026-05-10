@@ -23,6 +23,7 @@ import os
 from app.excel_export import generate_excel
 from typing import Any, AsyncIterator
 
+# pyrefly: ignore [missing-import]
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 
 from app import chat_store, config
@@ -416,7 +417,7 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
 
     # For strategic/deterministic intents, use planner-backed executor directly
     # so strategic recommendations don't fall into not_related in stream mode.
-    if plan.get("strategy") in ("strategic_mode", "deterministic_sql"):
+    if plan.get("strategy") == "deterministic_sql":
         tool_result = await loop.run_in_executor(
             None,
             functools.partial(

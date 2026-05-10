@@ -8,6 +8,7 @@ Do NOT hardcode any credentials here — always use the .env file.
 """
 
 import os
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
 # Load variables from backend/.env into the environment
@@ -15,6 +16,7 @@ load_dotenv()
 
 # ── Google Gemini ──────────────────────────────────────────────────────────────
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+SUMMARY_GEMINI_API_KEY: str = os.getenv("SUMMARY_GEMINI_API_KEY", GEMINI_API_KEY)
 
 # ── PostgreSQL (LangGraph checkpoints + chat UI persistence) ───────────────────
 # Example: postgresql://user:pass@localhost:5432/mydb
