@@ -134,6 +134,19 @@ def build_results_narrative(results: list[dict]) -> str | None:
     )
 
 
+def _dedupe_adjacent_paragraphs(text: str) -> str:
+    """Drop consecutive duplicate paragraphs (LLM sometimes repeats auto-narrative)."""
+    parts = [p.strip() for p in (text or "").split("\n\n") if p.strip()]
+    if not parts:
+        return (text or "").strip()
+    out: list[str] = []
+    for p in parts:
+        if out and out[-1] == p:
+            continue
+        out.append(p)
+    return "\n\n".join(out)
+
+
 def merge_explanation_with_narrative(llm_explanation: str, narrative: str | None) -> str:
     """Put numeric facts first; keep the model's friendly context after."""
     llm = (llm_explanation or "").strip()
@@ -147,4 +160,4 @@ def merge_explanation_with_narrative(llm_explanation: str, narrative: str | None
     )
     if generic_llm or not llm:
         return narrative
-    return f"{narrative}\n\n{llm}"
+    return _dedupe_adjacent_paragraphs(f"{narrative}\n\n{llm}")

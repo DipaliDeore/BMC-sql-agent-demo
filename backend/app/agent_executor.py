@@ -12,7 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 # pyrefly: ignore [missing-import]
 from langgraph.prebuilt import create_react_agent
 
-from app.tools.sql_tools import run_sql_query, render_pie_chart
+from app.tools.sql_tools import run_sql_query, render_chart
 from app import config
 from app.checkpointer import get_checkpointer
 from app.llm_errors import rate_limited
@@ -32,7 +32,7 @@ from app.memory.pipeline import (
 )
 
 
-AVAILABLE_TOOLS = [run_sql_query, render_pie_chart]
+AVAILABLE_TOOLS = [run_sql_query, render_chart]
 
 
 # ---------------------------------------------------------------------------
@@ -62,17 +62,20 @@ def _prepend_system(state: dict, config: RunnableConfig) -> list:
     memory_block = build_memory_preamble_for_system(tid)
     try:
         plan = json.loads(plan_json)
-        needs_pie_chart = plan.get("needs_pie_chart", False)
+        chart_hint = plan.get("chart_hint")
+        needs_chart = bool(plan.get("needs_chart")) and chart_hint in ("pie", "bar", "line")
     except Exception:
-        needs_pie_chart = False
+        chart_hint = None
+        needs_chart = False
 
-    pie_chart_instruction = ""
-    if needs_pie_chart:
-        pie_chart_instruction = """
-- PLANNER INSTRUCTION: This query requires a pie chart! You MUST use the `render_pie_chart` tool, but do it in TWO SEQUENTIAL STEPS:
+    chart_instruction = ""
+    if needs_chart and chart_hint:
+        chart_instruction = f"""
+- PLANNER INSTRUCTION: Visualize results as a {chart_hint.upper()} chart. You MUST use the `render_chart` tool in TWO SEQUENTIAL STEPS:
   Step 1: Call `run_sql_query` first and wait for the result.
-  Step 2: After seeing the SQL result, call `render_pie_chart` using the exact column names from the data you just received.
-  DO NOT put chart arguments into `run_sql_query`, and DO NOT try to call both tools at the exact same time.
+  Step 2: After seeing the SQL result, call `render_chart` with chart_type="{chart_hint}", x_column=<exact axis/category/time column>, y_column=<exact numeric column> from those rows. If the user compares two numeric series over the same x (e.g. successful vs failed by day), rewrite SQL to one row per x with TWO numeric columns (SUM CASE / pivot), then pass the second column as y_column_2 — do NOT refuse a chart because rows are long-format; reshape the query instead.
+  DO NOT put chart arguments into `run_sql_query`, and DO NOT call `run_sql_query` and `render_chart` at the same time before you have row data.
+  Chart choice: use chart_type "pie" only for part-to-whole / shares; "bar" for rankings or comparing categories; "line" for trends or time-ordered series (x_column = time or order dimension).
 """
 
     system_content = f"""You are an expert SQL query generator for a MySQL database.
@@ -87,8 +90,10 @@ YOUR TASK:
    - Call run_sql_query
 
 STRICT RULES:
+- If the user explicitly asks for a bar chart, line chart, pie chart, or time-series plot, call `render_chart` immediately after a successful `run_sql_query` for that dataset, using chart_type bar/line/pie and exact column names from the rows.
+- For "A vs B" / two metrics over time or category: return ONE pivoted query (one x, two numeric columns) and one `render_chart` with y_column and y_column_2. Do not claim charts are impossible because of long-format (date,status,count) data — pivot with conditional aggregation, then chart.
 - Max 6 tool calls
-- If the user asks for multiple distinct datasets or questions (e.g. 'How many customers and what are the top 3 products?'), you MUST explicitly make MULTIPLE PARALLEL tool calls at the exact same time by outputting an array with multiple run_sql_query calls. Do not process them one by one.{pie_chart_instruction}
+- If the user asks for multiple distinct datasets or questions (e.g. 'How many customers and what are the top 3 products?'), you MUST explicitly make MULTIPLE PARALLEL tool calls at the exact same time by outputting an array with multiple run_sql_query calls. Do not process them one by one.{chart_instruction}
 - If DB_ERROR → STOP immediately
 - If SQL_ERROR → fix and retry (max 2 retries)
 - After successfully executing queries, provide your final response based on the planner strategy:
@@ -256,7 +261,7 @@ def _summarize_from_messages(messages: list) -> dict:
     last_ai_text = ""
     successful_tools = []
     failed_tools = []
-    pie_chart_configs = []
+    chart_configs: list[dict[str, Any]] = []
 
     for msg in tail:
         if isinstance(msg, ToolMessage):
@@ -271,12 +276,27 @@ def _summarize_from_messages(messages: list) -> dict:
                     "status": "db_error",
                 }
             if data.get("success") is True:
-                if data.get("is_pie_chart") is True:
-                    pie_chart_configs.append({
-                        "is_pie_chart": True,
-                        "label_column": data.get("label_column"),
-                        "value_column": data.get("value_column"),
-                    })
+                if data.get("chart_type") in ("pie", "bar", "line"):
+                    cfg_entry: dict[str, Any] = {
+                        "chart_type": data["chart_type"],
+                        "x_column": data.get("x_column"),
+                        "y_column": data.get("y_column"),
+                        "is_pie_chart": data["chart_type"] == "pie",
+                    }
+                    y2 = data.get("y_column_2")
+                    if isinstance(y2, str) and y2.strip():
+                        cfg_entry["y_column_2"] = y2.strip()
+                    chart_configs.append(cfg_entry)
+                elif data.get("is_pie_chart") is True:
+                    # Legacy tool payloads (label/value only)
+                    chart_configs.append(
+                        {
+                            "chart_type": "pie",
+                            "x_column": data.get("label_column"),
+                            "y_column": data.get("value_column"),
+                            "is_pie_chart": True,
+                        }
+                    )
                 else:
                     successful_tools.append(data)
             elif data.get("error"):
@@ -291,8 +311,15 @@ def _summarize_from_messages(messages: list) -> dict:
             return None
         first_row = rows[0]
         for conf in configs:
-            if conf.get("label_column") in first_row and conf.get("value_column") in first_row:
-                return conf
+            xc = conf.get("x_column")
+            yc = conf.get("y_column")
+            if xc not in first_row or yc not in first_row:
+                continue
+            y2 = conf.get("y_column_2")
+            if isinstance(y2, str) and y2.strip():
+                if y2.strip() not in first_row:
+                    continue
+            return conf
         return None
 
     if len(successful_tools) == 1 and not failed_tools:
@@ -313,7 +340,7 @@ def _summarize_from_messages(messages: list) -> dict:
             "row_count": len(rows),
             "status": "success",
             "is_multi": False,
-            "chart_config": _find_matching_chart(rows, pie_chart_configs),
+            "chart_config": _find_matching_chart(rows, chart_configs),
         }
 
     elif len(successful_tools) > 1 or (successful_tools and failed_tools):
@@ -334,7 +361,7 @@ def _summarize_from_messages(messages: list) -> dict:
                 "cache_references": [],
                 "status": "success",
                 "cache_doc_id": None,
-                "chart_config": _find_matching_chart(rows, pie_chart_configs)
+                "chart_config": _find_matching_chart(rows, chart_configs),
             })
 
         for i, data in enumerate(failed_tools):

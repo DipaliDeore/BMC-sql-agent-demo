@@ -6,7 +6,8 @@ import React from "react";
 import ResultTable from "./ResultTable";
 import SqlViewer from "./SqlViewer";
 import MessageFeedback from "./MessageFeedback";
-import PieChartViewer from "./PieChartViewer";
+import ChartPanel from "./ChartPanel";
+import { hasRenderableChart } from "./chartConfig";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -124,8 +125,8 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
                 </div>
               )}
 
-              {sub.chart_config?.is_pie_chart && sub.results && sub.results.length > 0 && (
-                <PieChartViewer data={sub.results} config={sub.chart_config} />
+              {hasRenderableChart(sub.chart_config) && sub.results && sub.results.length > 0 && (
+                <ChartPanel data={sub.results} config={sub.chart_config} />
               )}
 
               {sub.result_sentence ? (
@@ -133,7 +134,7 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
                   {sub.result_sentence}
                 </p>
               ) : sub.results && sub.results.length > 0 ? (
-                <div style={{ marginBottom: "14px", marginTop: sub.chart_config?.is_pie_chart ? "16px" : "0" }}>
+                <div style={{ marginBottom: "14px", marginTop: hasRenderableChart(sub.chart_config) ? "16px" : "0" }}>
                   <ResultTable results={sub.results} />
                 </div>
               ) : (
@@ -209,11 +210,11 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
           </div>
         )}
 
-        {message.chart_config?.is_pie_chart &&
+        {hasRenderableChart(message.chart_config) &&
           message.results &&
           message.results.length > 0 && (
             <div style={{ marginBottom: "14px" }}>
-              <PieChartViewer data={message.results} config={message.chart_config} />
+              <ChartPanel data={message.results} config={message.chart_config} />
             </div>
         )}
 
@@ -221,7 +222,7 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
         !message.result_sentence &&
         message.results &&
         message.results.length > 0 && (
-          <div style={{ marginBottom: "14px", marginTop: message.chart_config?.is_pie_chart ? "16px" : "0" }}>
+          <div style={{ marginBottom: "14px", marginTop: hasRenderableChart(message.chart_config) ? "16px" : "0" }}>
             <ResultTable results={message.results} />
           </div>
         )}

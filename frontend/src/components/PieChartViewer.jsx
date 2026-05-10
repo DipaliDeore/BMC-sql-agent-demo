@@ -5,9 +5,12 @@ const COLORS = ['#2563eb', '#7c3aed', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'
 
 export default function PieChartViewer({ data, config }) {
   if (!data || data.length === 0) return null;
-  if (!config || !config.is_pie_chart) return null;
+  const isPie = config?.chart_type === "pie" || config?.is_pie_chart === true;
+  if (!config || !isPie) return null;
 
-  const { label_column, value_column } = config;
+  const label_column = config.label_column ?? config.x_column;
+  const value_column = config.value_column ?? config.y_column;
+  if (!label_column || !value_column) return null;
 
   // Format data for Recharts, handling any data types.
   const chartData = data.map((item) => {

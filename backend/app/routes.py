@@ -104,7 +104,7 @@ class QueryResponse(BaseModel):
     cache_doc_id: str | None = None
     # DB id of the assistant row saved for this response.
     assistant_message_id: str | None = None
-    # Chart config for single query responses
+    # chart_type: pie | bar | line; x_column / y_column (+ optional y_column_2) = exact result keys (sql_tools)
     chart_config: dict | None = None
     excel_download_url: str | None = None
 
