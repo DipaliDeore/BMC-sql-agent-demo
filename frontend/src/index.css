@@ -614,3 +614,32 @@ button:focus:not(:focus-visible) {
   border-bottom: 1px solid color-mix(in srgb, var(--error) 22%, var(--border));
   backdrop-filter: blur(8px);
 }
+
+/* ── Markdown styling ──────────────────────────────────────────────────────── */
+.markdown-wrapper {
+  line-height: 1.6;
+}
+.markdown-wrapper p {
+  margin-bottom: 0.85em;
+}
+.markdown-wrapper p:last-child {
+  margin-bottom: 0;
+}
+.markdown-wrapper ul, .markdown-wrapper ol {
+  padding-left: 1.5em;
+  margin-bottom: 0.85em;
+}
+.markdown-wrapper li {
+  margin-bottom: 0.3em;
+}
+.markdown-wrapper strong, .markdown-wrapper b {
+  font-weight: 600;
+  color: var(--text);
+}
+.markdown-wrapper code {
+  background: var(--surface-2);
+  padding: 0.15em 0.3em;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.9em;
+}

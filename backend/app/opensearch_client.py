@@ -10,6 +10,7 @@ to match OpenAI text-embedding-3-small and a k-NN mapping for vector search.
 
 from typing import Optional
 
+# pyrefly: ignore [missing-import]
 from opensearchpy import OpenSearch, helpers
 import urllib3
 from app import config

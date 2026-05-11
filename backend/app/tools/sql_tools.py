@@ -13,6 +13,7 @@ from datetime import date, datetime
 from decimal import Decimal
 import re
 
+# pyrefly: ignore [missing-import]
 from langchain_core.tools import tool
 from app.query_validator import validate_sql, QueryValidationError
 from app.database import execute_query, select_sql_with_row_limit
@@ -210,16 +211,90 @@ def run_sql_query(sql: str) -> dict:
         "sql": select_sql_with_row_limit(validated_sql),
     }
 
+
+# ---------------------------------------------------------------------------
+# chart_config contract (API + SSE + chat UI)
+# ---------------------------------------------------------------------------
+# Tool ``render_chart`` returns a marker payload (no rows). After
+# ``run_sql_query``, the executor matches markers to result sets by checking
+# that x_column and y_column exist on the first result row, then attaches:
+#
+#   {
+#     "chart_type": "pie" | "bar" | "line",
+#     "x_column": str,   # category / time / ordered dimension
+#     "y_column": str,   # primary numeric measure
+#     "y_column_2": str | None,  # optional second series (line/bar only), e.g. failed vs successful counts
+#     "is_pie_chart": bool,  # True iff chart_type == "pie" (backward compat)
+#   }
+#
+# Legacy pie-only payloads used label_column + value_column + is_pie_chart;
+# the executor normalizes those to the shape above.
+
+
+_VALID_CHART_TYPES = frozenset({"pie", "bar", "line"})
+
+
 @tool
-def render_pie_chart(label_column: str, value_column: str) -> dict:
+def render_chart(chart_type: str, x_column: str, y_column: str, y_column_2: str = "") -> dict:
     """
-    Call this tool in PARALLEL with run_sql_query when the user requests a pie chart visualization or the data inherently represents a distribution/pie chart.
-    Specify exactly which column should be the label/category, and which column should be the numerical value.
-    Example: render_pie_chart(label_column="status", value_column="total_count")
+    Declare how to visualize a prior ``run_sql_query`` result. Call ONLY after
+    you have seen the SQL rows, using exact column names from that result.
+
+    - chart_type ``pie``: part-to-whole / distribution (categories + shares).
+    - chart_type ``bar``: rankings or comparisons across discrete categories.
+    - chart_type ``line``: trends or time-ordered series (x_column is time/order).
+
+    For ``line`` or ``bar`` when comparing two metrics over the same x (e.g. successful
+    vs failed payments by day), use optional ``y_column_2`` for the second numeric column.
+    Prefer reshaping SQL to one row per x with two count columns, then call
+    ``render_chart(..., y_column="completed_count", y_column_2="failed_count")``.
+
+    Two-step flow (sequential, not parallel with the same SQL you have not run yet):
+      1) ``run_sql_query``
+      2) ``render_chart`` with the same row shape you received.
+
+    Example: render_chart(chart_type="bar", x_column="product_name", y_column="total_sales")
+    Example (dual series): render_chart(chart_type="line", x_column="payment_date", y_column="successful_count", y_column_2="failed_count")
     """
-    return {
+    ct = (chart_type or "").strip().lower()
+    if ct not in _VALID_CHART_TYPES:
+        return {
+            "success": False,
+            "error": f"Invalid chart_type {chart_type!r}. Use one of: pie, bar, line.",
+            "error_type": "VALIDATION",
+        }
+    xc = (x_column or "").strip()
+    yc = (y_column or "").strip()
+    if not xc or not yc:
+        return {
+            "success": False,
+            "error": "x_column and y_column must be non-empty.",
+            "error_type": "VALIDATION",
+        }
+    y2 = (y_column_2 or "").strip() or None
+    if y2 and ct == "pie":
+        return {
+            "success": False,
+            "error": "y_column_2 is only supported for chart_type bar or line.",
+            "error_type": "VALIDATION",
+        }
+    if y2 and y2 == yc:
+        return {
+            "success": False,
+            "error": "y_column_2 must differ from y_column.",
+            "error_type": "VALIDATION",
+        }
+
+    out: dict = {
         "success": True,
-        "is_pie_chart": True,
-        "label_column": label_column,
-        "value_column": value_column
+        "chart_type": ct,
+        "x_column": xc,
+        "y_column": yc,
+        "is_pie_chart": ct == "pie",
+        "label_column": xc,
+        "value_column": yc,
     }
+    if y2:
+        out["y_column_2"] = y2
+    return out
+

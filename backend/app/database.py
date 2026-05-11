@@ -9,7 +9,9 @@ Connects to TiDB Cloud (MySQL-compatible) using SSL and provides:
   - get_database_schema()  : Return a text description of the database schema
 """
 
+# pyrefly: ignore [missing-import]
 import mysql.connector
+# pyrefly: ignore [missing-import]
 from mysql.connector import Error
 
 from app import config

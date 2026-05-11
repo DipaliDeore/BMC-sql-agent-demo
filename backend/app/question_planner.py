@@ -58,7 +58,7 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
         intents.append("breakdown")
     if _contains_any(ql, ["vs", "versus", "compare", "top ", "bottom ", "growth", "decline", "trend"]):
         intents.append("comparative_or_trend")
-    if _contains_any(ql, ["increase sales", "focus on", "why did", "recommend", "improve"]):
+    if _contains_any(ql, ["increase sales", "focus on", "why did", "recommend", "improve", "analyze", "analysis", "insight", "how to", "what should"]):
         intents.append("strategic_recommendation")
     if _contains_any(ql, ["low stock", "warehouse", "delayed", "churn", "high demand", "frequently ordered"]):
         intents.append("operational_alert")
@@ -123,6 +123,53 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
             f"Interpreting month window as month {month_window[0]} through month {month_window[1]}."
         )
 
+    # Chart hint for the agent: pie (part-to-whole), bar (categories / rankings), line (time / trend).
+    chart_hint: str | None = None
+    if re.search(r"\bpie[\s-]*chart\b|\bpie[\s-]*graph\b|\bdonut\b", ql) or _contains_any(
+        ql, ["proportion", "share of", "percentage of"]
+    ):
+        chart_hint = "pie"
+    elif _contains_any(
+        ql,
+        [
+            "line chart",
+            "time series",
+            "trend",
+            "daily trend",
+            "over time",
+            "month over month",
+            "year over year",
+            "daily ",
+            "weekly ",
+            "by month",
+            "by day",
+            "by week",
+            "successful vs",
+            "failed vs",
+            " vs failed",
+            " vs successful",
+        ],
+    ) or ("comparative_or_trend" in intents and _contains_any(ql, ["trend", "growth", "decline"])):
+        chart_hint = "line"
+    elif _contains_any(
+        ql,
+        [
+            "bar chart",
+            "column chart",
+            "ranking",
+            "top 10",
+            "top 5",
+            "top 3",
+            "bottom ",
+            "compare ",
+            " versus",
+            " vs ",
+        ],
+    ):
+        chart_hint = "bar"
+    elif _contains_any(ql, ["distribution", "breakdown"]) or "breakdown" in intents:
+        chart_hint = "pie"
+
     return {
         "question": q,
         "intents": intents or ["direct_metric"],
@@ -130,4 +177,8 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
         "assumptions": assumptions,
         "strategy": strategy,
         "deterministic_sql": deterministic_sql,
+        "chart_hint": chart_hint,
+        "needs_chart": chart_hint is not None,
+        # Backward compatibility for older clients reading plan JSON only
+        "needs_pie_chart": chart_hint == "pie",
     }

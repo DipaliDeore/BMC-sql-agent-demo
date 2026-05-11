@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
+# pyrefly: ignore [missing-import]
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+# pyrefly: ignore [missing-import]
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app import config
@@ -50,11 +52,11 @@ def generate_conversation_summary(
     if not brief.strip() and not prior_summary:
         return prior_summary or ""
 
-    key = (config.GEMINI_API_KEY or "").strip()
+    key = (config.SUMMARY_GEMINI_API_KEY or "").strip()
     if not key:
         return merge_rolling_summary(
             prior_summary,
-            f"(Summary skipped: no GEMINI_API_KEY) Transcript digest chars={len(brief)}",
+            f"(Summary skipped: no SUMMARY_GEMINI_API_KEY) Transcript digest chars={len(brief)}",
         )
 
     llm = ChatGoogleGenerativeAI(

@@ -4,7 +4,9 @@ import json
 import logging
 from collections.abc import Sequence
 
-from langchain_core.messages import BaseMessage, ToolMessage
+# pyrefly: ignore [missing-import]
+from langchain_core.messages import BaseMessage, ToolMessage, AIMessage
+# pyrefly: ignore [missing-import]
 from langchain_core.runnables import RunnableConfig
 
 from app import config
@@ -74,7 +76,31 @@ def apply_hybrid_message_view(
         len(tail),
         cap,
     )
-    return tail
+    return _sanitize_tool_call_sequences(tail)
+
+def _sanitize_tool_call_sequences(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+    """
+    Remove tool_calls from AIMessages if they are not followed by ToolMessages.
+    This prevents Gemini's INVALID_ARGUMENT error when conversation history contains
+    aborted or orphaned tool calls (e.g. from hitting recursion limits).
+    """
+    out: list[BaseMessage] = []
+    for i, msg in enumerate(messages):
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            has_tool_response = False
+            if i + 1 < len(messages) and isinstance(messages[i+1], ToolMessage):
+                has_tool_response = True
+            
+            if not has_tool_response:
+                # Strip the tool_calls from this message
+                sanitized_msg = AIMessage(
+                    content=msg.content,
+                    id=msg.id,
+                )
+                out.append(sanitized_msg)
+                continue
+        out.append(msg)
+    return out
 
 
 def _system_memory_blocks(thread_id: str) -> tuple[str, str]:

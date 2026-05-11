@@ -16,13 +16,18 @@ Also see ``app.services.feedback_service``: POST /feedback (thumbs up/down) at a
 
 import asyncio
 import uuid
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, HTTPException
+# pyrefly: ignore [missing-import]
 from fastapi.responses import StreamingResponse
+# pyrefly: ignore [missing-import]
 from pydantic import BaseModel, Field, field_validator
+# pyrefly: ignore [missing-import]
 from langsmith import traceable
 
 import os
 from pathlib import Path
+# pyrefly: ignore [missing-import]
 from fastapi.responses import FileResponse
 from app.excel_export import generate_excel, should_offer_excel
 
@@ -99,7 +104,7 @@ class QueryResponse(BaseModel):
     cache_doc_id: str | None = None
     # DB id of the assistant row saved for this response.
     assistant_message_id: str | None = None
-    # Chart config for single query responses
+    # chart_type: pie | bar | line; x_column / y_column (+ optional y_column_2) = exact result keys (sql_tools)
     chart_config: dict | None = None
     excel_download_url: str | None = None
 

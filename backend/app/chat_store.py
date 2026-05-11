@@ -12,7 +12,9 @@ from decimal import Decimal
 from datetime import datetime, timezone
 from typing import Any
 
+# pyrefly: ignore [missing-import]
 from psycopg.rows import dict_row
+# pyrefly: ignore [missing-import]
 from psycopg.types.json import Json
 
 from app.checkpointer import get_postgres_pool
