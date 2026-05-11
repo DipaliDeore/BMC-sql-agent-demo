@@ -20,7 +20,7 @@ import threading
 import uuid
 import functools
 import os
-from app.excel_export import generate_excel
+from app.excel_export import generate_excel, should_offer_excel
 from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
@@ -263,7 +263,7 @@ def _final_http_payload_from_tool_result(
     excel_download_url = None
     inline_results = results
 
-    if row_count > 0:
+    if row_count > 0 and should_offer_excel(results, question, row_count):
         try:
             filepath = generate_excel(results)
             fname = os.path.basename(filepath)
