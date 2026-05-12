@@ -29,7 +29,7 @@ import os
 from pathlib import Path
 # pyrefly: ignore [missing-import]
 from fastapi.responses import FileResponse
-from app.excel_export import generate_excel
+from app.excel_export import generate_excel, should_offer_excel
 
 from app import config
 from app.database import execute_query, get_database_schema, select_sql_with_row_limit
@@ -375,7 +375,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
 
     excel_download_url = None
 
-    if row_count > 0:
+    if row_count > 0 and should_offer_excel(result, body.question, row_count):
         try:
             filepath = generate_excel(result)
             filename = os.path.basename(filepath)

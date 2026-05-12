@@ -141,3 +141,39 @@ def generate_excel(
     print(f"[ExcelExport] Generated: {filename} ({len(results)} rows)")
 
     return str(filepath)
+
+def should_offer_excel(
+    results: list[dict],
+    question: str,
+    row_count: int
+) -> bool:
+    """
+    Decide if Excel download should be offered to the user.
+
+    Returns True if:
+      1. User explicitly asked for excel/download/export/file, OR
+      2. Result is list-type: more than 1 row AND more than 1 column
+
+    Returns False for:
+      - Count/aggregation queries (single row, single column)
+      - Empty results
+    """
+    if not results or row_count == 0:
+        return False
+
+    # Case 1: User explicitly asked for Excel or file download
+    excel_keywords = [
+        "excel", "download", "export",
+        "sheet", "spreadsheet", "file",
+        "csv", "save", "generate file"
+    ]
+    if any(kw in question.lower() for kw in excel_keywords):
+        return True
+
+    # Case 2: List-type result (multiple rows AND multiple columns)
+    num_columns = len(results[0].keys()) if results else 0
+    if row_count > 1 and num_columns > 1:
+        return True
+
+    # Single value, count, sum, avg = no Excel needed
+    return False
