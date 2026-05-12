@@ -42,12 +42,30 @@ from app.response_formatting import (
     build_results_narrative,
     merge_explanation_with_narrative,
 )
+from app.vision_gate import run_vision_image_pipeline
+from app.chat_image_payload import pack_user_image_attachments_for_storage
 
 
 # ── Create API Router ─────────────────────────────────────────────────────────
 # All routes defined here will automatically get the /api prefix.
 # Example: "/query" becomes "/api/query"
 router = APIRouter(prefix="/api", tags=["SQL Agent"])
+
+
+def _user_payload_for_query_request(body: "QueryRequest") -> dict | None:
+    """Build optional user message payload (e.g. image_attachments); raises HTTPException 413 on limit breach."""
+    if not body.images:
+        return None
+    # Plain dicts for storage packer (avoids edge cases where nested models behave oddly).
+    imgs = [img.model_dump() for img in body.images]
+    payload, err = pack_user_image_attachments_for_storage(
+        imgs,
+        max_total_decoded_bytes=int(config.CHAT_IMAGE_PAYLOAD_MAX_TOTAL_DECODED_BYTES),
+        max_per_image_decoded_bytes=int(config.CHAT_IMAGE_PAYLOAD_MAX_PER_IMAGE_DECODED_BYTES),
+    )
+    if err:
+        raise HTTPException(status_code=413, detail=err)
+    return payload
 
 
 # ── Request / Response Models ─────────────────────────────────────────────────
@@ -66,6 +84,29 @@ class ChatMessageItem(BaseModel):
         return v
 
 
+class ImageAttachment(BaseModel):
+    """One image as base64 for OpenAI vision (optional on /api/query)."""
+
+    media_type: str = Field(default="image/png", description="e.g. image/jpeg, image/png, image/webp")
+    data_base64: str = Field(..., min_length=1, description="Raw base64 or data:image/...;base64,...")
+
+    @field_validator("data_base64")
+    @classmethod
+    def _strip_data_url(cls, v: str) -> str:
+        s = (v or "").strip()
+        if "base64," in s:
+            return s.split("base64,", 1)[-1].strip()
+        return s
+
+    @field_validator("media_type")
+    @classmethod
+    def _normalize_mime(cls, v: str) -> str:
+        m = (v or "image/png").strip().lower()
+        if m == "image/jpg":
+            m = "image/jpeg"
+        return m if m.startswith("image/") else "image/png"
+
+
 class QueryRequest(BaseModel):
     """Request body for the POST /api/query endpoint."""
     question: str  # The user's natural language question
@@ -74,6 +115,17 @@ class QueryRequest(BaseModel):
     preference: str | None = "AUTO"  # "AUTO", "SINGLE", "MULTI"
     # Optional: full transcript from the client (stored server-side is authoritative)
     messages: list[ChatMessageItem] | None = None
+    # Optional images: OpenAI vision gate + answer (does not use Gemini for vision)
+    images: list[ImageAttachment] | None = None
+
+    @field_validator("images")
+    @classmethod
+    def _cap_images(cls, v: list[ImageAttachment] | None) -> list[ImageAttachment] | None:
+        if v is None:
+            return None
+        if len(v) > 4:
+            raise ValueError("At most 4 images per request")
+        return v
 
 
 class CreateChatBody(BaseModel):
@@ -372,9 +424,11 @@ async def handle_query(body: QueryRequest):
         - If query returns no rows → explanation = "No records found for your query."
     """
     conversation_id = (body.conversation_id or "").strip() or str(uuid.uuid4())
+    has_images = bool(body.images)
+    question_effective = body.question.strip()
 
-    # Empty question — respond in chat style (still a normal JSON body for clients)
-    if not body.question.strip():
+    # Empty text and no images — respond in chat style (still a normal JSON body for clients)
+    if not question_effective and not has_images:
         return QueryResponse(
             question=body.question,
             sql="",
@@ -388,12 +442,28 @@ async def handle_query(body: QueryRequest):
     _ = body.messages
 
     chat_store.ensure_chat(conversation_id)
-    chat_store.maybe_set_title_from_first_question(
-        conversation_id, body.question.strip()
-    )
-    chat_store.add_message(conversation_id, "user", body.question.strip(), None)
+    title_seed = question_effective or ("Image" if has_images else "")
+    chat_store.maybe_set_title_from_first_question(conversation_id, title_seed)
+    user_display = question_effective or ("[Image attachment]" if has_images else "")
+    user_payload = _user_payload_for_query_request(body)
+    chat_store.add_message(conversation_id, "user", user_display, user_payload)
 
     try:
+        vision_payload = await run_vision_image_pipeline(
+            question_effective or "(Image only)",
+            body.images,
+            conversation_id,
+        )
+        if vision_payload is not None:
+            response = QueryResponse(**vision_payload)
+            row = chat_store.add_message(
+                conversation_id,
+                "assistant",
+                _assistant_chat_content(response),
+                _assistant_payload_from_response(response),
+            )
+            return response.model_copy(update={"assistant_message_id": str(row["id"])})
+
         response = await _execute_nl_query(body, conversation_id)
     except Exception as e:
         err_text = (str(e) or "").strip() or "Something went wrong. Please try again."
@@ -425,8 +495,10 @@ async def handle_query_stream(body: QueryRequest):
 
     conversation_id = (body.conversation_id or "").strip() or str(uuid.uuid4())
     body = body.model_copy(update={"conversation_id": conversation_id})
+    has_images = bool(body.images)
+    question_effective = body.question.strip()
 
-    if not body.question.strip():
+    if not question_effective and not has_images:
 
         async def _empty_sse():
             final = {
@@ -461,10 +533,11 @@ async def handle_query_stream(body: QueryRequest):
     _ = body.messages
 
     chat_store.ensure_chat(conversation_id)
-    chat_store.maybe_set_title_from_first_question(
-        conversation_id, body.question.strip()
-    )
-    chat_store.add_message(conversation_id, "user", body.question.strip(), None)
+    title_seed = question_effective or ("Image" if has_images else "")
+    chat_store.maybe_set_title_from_first_question(conversation_id, title_seed)
+    user_display = question_effective or ("[Image attachment]" if has_images else "")
+    user_payload = _user_payload_for_query_request(body)
+    chat_store.add_message(conversation_id, "user", user_display, user_payload)
 
     return StreamingResponse(
         streaming_query_handler(body),

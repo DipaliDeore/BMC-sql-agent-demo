@@ -17,9 +17,26 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
   const canShowInlineResults = !message.row_count || message.row_count <= 100;
 
   if (isUser) {
+    const previews = message.attachmentPreviews || [];
     return (
-      <div className="msg-animate" style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
-        <div className="user-msg-bubble">{message.content}</div>
+      <div className="msg-animate msg-row-user">
+        <div className="user-msg-bubble">
+          {previews.length > 0 ? (
+            <div
+              className={`user-attachment-stack${message.content ? " user-attachment-stack--has-text" : ""}`}
+            >
+              {previews.map((src, i) => (
+                <img
+                  key={i}
+                  src={src}
+                  alt=""
+                  className="user-attachment-thumb"
+                />
+              ))}
+            </div>
+          ) : null}
+          {message.content ? <div className="user-msg-text">{message.content}</div> : null}
+        </div>
       </div>
     );
   }

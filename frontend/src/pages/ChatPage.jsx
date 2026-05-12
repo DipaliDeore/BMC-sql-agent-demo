@@ -17,12 +17,41 @@ import {
   mapMessagesForApi,
 } from "../api/agent";
 
+/** API may return JSONB as object or (rarely) JSON string. */
+function normalizeMessagePayload(payload) {
+  if (payload == null) return {};
+  if (typeof payload === "string") {
+    try {
+      const o = JSON.parse(payload);
+      return typeof o === "object" && o !== null ? o : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof payload === "object" ? payload : {};
+}
+
 function fromApiMessage(row) {
   if (row.role === "user") {
-    return { id: `db-${row.id}`, role: "user", content: row.content };
+    const p = normalizeMessagePayload(row.payload);
+    const atts = p.image_attachments || p.imageAttachments;
+    let attachmentPreviews;
+    if (Array.isArray(atts) && atts.length > 0) {
+      attachmentPreviews = atts.map((a) => {
+        const mime = (a.media_type || "image/png").trim() || "image/png";
+        const b64 = String(a.data_base64 || "").replace(/\s/g, "");
+        return `data:${mime};base64,${b64}`;
+      });
+    }
+    return {
+      id: `db-${row.id}`,
+      role: "user",
+      content: row.content,
+      ...(attachmentPreviews ? { attachmentPreviews } : {}),
+    };
   }
 
-  const p = row.payload || {};
+  const p = normalizeMessagePayload(row.payload);
   return {
     id: `db-${row.id}`,
     serverMessageId: row.id,
@@ -50,6 +79,7 @@ export default function ChatPage({ theme, toggleTheme }) {
   const [messagesByChat, setMessagesByChat] = useState({});
   const [loadingByChat, setLoadingByChat] = useState({});
   const [inputValue, setInputValue] = useState("");
+  const [pendingImages, setPendingImages] = useState([]);
   const [initError, setInitError] = useState(null);
 
   const activeMessages = useMemo(
@@ -97,10 +127,13 @@ export default function ChatPage({ theme, toggleTheme }) {
     if (!activeChatId) return;
     const chatId = activeChatId;
 
+    const snapshot = [...pendingImages];
+    const qText = question.trim();
     const userMessage = {
       id: `local-u-${Date.now()}`,
       role: "user",
-      content: question,
+      content: qText || (snapshot.length ? "(Image)" : ""),
+      attachmentPreviews: snapshot.map((p) => p.preview),
     };
 
     const assistantId = `local-a-${chatId}-${Date.now()}`;
@@ -113,7 +146,7 @@ export default function ChatPage({ theme, toggleTheme }) {
       streamStatus: "Thinking…",
       streamSql: "",
       streamRows: [],
-      original_question: question,
+      original_question: qText || (snapshot.length ? "(Image only)" : question),
     };
 
     const currentMessages = messagesByChat[chatId] || [];
@@ -125,81 +158,96 @@ export default function ChatPage({ theme, toggleTheme }) {
     try {
       const forApi = mapMessagesForApi(nextMessages);
 
-      await streamQuery(question, chatId, "AUTO", forApi, {
-        onEvent: (evt) => {
-          setChatMessages(chatId, (prev) =>
-            prev.map((m) => {
-              if (m.id !== assistantId) return m;
+      const imagePayload =
+        snapshot.length > 0
+          ? snapshot.map(({ media_type, data_base64 }) => ({ media_type, data_base64 }))
+          : null;
 
-              if (evt.type === "status") {
-                const labels = {
-                  thinking: "Thinking…",
-                  generating_sql: "Generating SQL…",
-                  executing_sql: "Executing query…",
-                  done: "Wrapping up…",
-                };
-                return {
-                  ...m,
-                  streamStatus: labels[evt.content] || evt.content,
-                };
-              }
+      await streamQuery(
+        qText || (snapshot.length ? "(Image only)" : question),
+        chatId,
+        "AUTO",
+        forApi,
+        {
+          onEvent: (evt) => {
+            setChatMessages(chatId, (prev) =>
+              prev.map((m) => {
+                if (m.id !== assistantId) return m;
 
-              if (evt.type === "token") {
-                return {
-                  ...m,
-                  streamText: (m.streamText || "") + evt.content,
-                };
-              }
+                if (evt.type === "status") {
+                  const labels = {
+                    thinking: "Thinking…",
+                    generating_sql: "Generating SQL…",
+                    executing_sql: "Executing query…",
+                    done: "Wrapping up…",
+                    analyzing_image: "Analyzing image…",
+                  };
+                  return {
+                    ...m,
+                    streamStatus: labels[evt.content] || evt.content,
+                  };
+                }
 
-              if (evt.type === "sql") {
-                return { ...m, streamSql: evt.content };
-              }
+                if (evt.type === "token") {
+                  return {
+                    ...m,
+                    streamText: (m.streamText || "") + evt.content,
+                  };
+                }
 
-              if (evt.type === "data") {
-                return {
-                  ...m,
-                  streamRows: [...(m.streamRows || []), evt.content],
-                };
-              }
+                if (evt.type === "sql") {
+                  return { ...m, streamSql: evt.content };
+                }
 
-              if (evt.type === "final") {
-                const d = evt.content || {};
-                return {
-                  id: assistantId,
-                  serverMessageId: d.assistant_message_id ?? null,
-                  role: "assistant",
-                  sql: d.sql,
-                  results: d.results,
-                  explanation: d.explanation,
-                  row_count: d.row_count,
-                  result_sentence: d.result_sentence ?? null,
-                  cache_references: d.cache_references ?? null,
-                  is_multi: d.is_multi ?? false,
-                  sub_responses: d.sub_responses ?? [],
-                  is_ambiguous: d.is_ambiguous ?? false,
-                  original_question: question,
-                  cache_doc_id: d.cache_doc_id ?? null,
-                  chart_config: d.chart_config ?? null,
-                  excel_download_url: d.excel_download_url ?? null,
-                };
-              }
+                if (evt.type === "data") {
+                  return {
+                    ...m,
+                    streamRows: [...(m.streamRows || []), evt.content],
+                  };
+                }
 
-              if (evt.type === "error") {
-                return {
-                  id: assistantId,
-                  role: "assistant",
-                  error: true,
-                  errorText: evt.content || "Something went wrong",
-                };
-              }
+                if (evt.type === "final") {
+                  const d = evt.content || {};
+                  return {
+                    id: assistantId,
+                    serverMessageId: d.assistant_message_id ?? null,
+                    role: "assistant",
+                    sql: d.sql,
+                    results: d.results,
+                    explanation: d.explanation,
+                    row_count: d.row_count,
+                    result_sentence: d.result_sentence ?? null,
+                    cache_references: d.cache_references ?? null,
+                    is_multi: d.is_multi ?? false,
+                    sub_responses: d.sub_responses ?? [],
+                    is_ambiguous: d.is_ambiguous ?? false,
+                    original_question: qText || (snapshot.length ? "(Image only)" : question),
+                    cache_doc_id: d.cache_doc_id ?? null,
+                    chart_config: d.chart_config ?? null,
+                    excel_download_url: d.excel_download_url ?? null,
+                  };
+                }
 
-              return m;
-            }),
-          );
+                if (evt.type === "error") {
+                  return {
+                    id: assistantId,
+                    role: "assistant",
+                    error: true,
+                    errorText: evt.content || "Something went wrong",
+                  };
+                }
+
+                return m;
+              }),
+            );
+          },
         },
-      });
+        imagePayload,
+      );
 
+      setPendingImages([]);
       await refreshChats();
+      await loadMessages(chatId);
     } catch (error) {
       setChatMessages(chatId, (prev) =>
         prev.map((m) =>
@@ -300,6 +348,8 @@ export default function ChatPage({ theme, toggleTheme }) {
         onSend={handleSend}
         inputValue={inputValue}
         setInputValue={setInputValue}
+        pendingImages={pendingImages}
+        onPendingImagesChange={setPendingImages}
       />
     </div>
   );

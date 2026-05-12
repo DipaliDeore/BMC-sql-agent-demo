@@ -81,6 +81,7 @@ export async function deleteChat(chatId) {
  * @param {string} [preference]
  * @param {Array<{role:string,content:string}>|null} [messages]
  * @param {{ onEvent?: (e: { type: string, content: unknown }) => void }} [handlers]
+ * @param {Array<{ media_type: string, data_base64: string }>|null} [images] — OpenAI vision (max 4)
  * @returns {Promise<void>}
  */
 export async function streamQuery(
@@ -89,11 +90,18 @@ export async function streamQuery(
   preference = "AUTO",
   messages = null,
   handlers = {},
+  images = null,
 ) {
   const { onEvent } = handlers;
   const body = { question, preference: preference || "AUTO" };
   if (conversationId) body.conversation_id = conversationId;
   if (messages?.length) body.messages = messages;
+  if (images?.length) {
+    body.images = images.map(({ media_type, data_base64 }) => ({
+      media_type: media_type || "image/png",
+      data_base64,
+    }));
+  }
 
   const res = await fetch(`${API_BASE_URL}/api/query/stream`, {
     method: "POST",

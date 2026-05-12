@@ -45,6 +45,7 @@ from app.response_formatting import (
     merge_explanation_with_narrative,
 )
 from app.search import REFERENCE_TOP_K, find_similar_queries
+from app.vision_gate import run_vision_image_pipeline
 def _sse_data(obj: dict) -> bytes:
     line = json.dumps(obj, default=str)
     return f"data: {line}\n\n".encode("utf-8")
@@ -392,6 +393,23 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
         yield _sse_data({"type": "status", "content": "done"})
         yield _sse_data({"type": "final", "content": final})
         return
+
+    if getattr(body, "images", None):
+        q_vis = question.strip() or "(Image only)"
+        vision_payload = await run_vision_image_pipeline(q_vis, body.images, conversation_id)
+        if vision_payload is not None:
+            final = {**vision_payload, "assistant_message_id": None}
+            row = chat_store.add_message(
+                conversation_id,
+                "assistant",
+                _chat_assistant_content(final),
+                _chat_payload_from_final(final),
+            )
+            final["assistant_message_id"] = str(row["id"])
+            yield _sse_data({"type": "status", "content": "analyzing_image"})
+            yield _sse_data({"type": "status", "content": "done"})
+            yield _sse_data({"type": "final", "content": final})
+            return
 
     try:
         schema = await loop.run_in_executor(None, get_database_schema)

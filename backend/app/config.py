@@ -8,11 +8,15 @@ Do NOT hardcode any credentials here — always use the .env file.
 """
 
 import os
+from pathlib import Path
+
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
-# Load variables from backend/.env into the environment
-load_dotenv()
+# Load backend/.env regardless of process cwd (uvicorn may start from repo root).
+_backend_root = Path(__file__).resolve().parent.parent
+load_dotenv(_backend_root / ".env")
+load_dotenv()  # fallback: cwd-based .env if present
 
 # ── Google Gemini ──────────────────────────────────────────────────────────────
 GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
@@ -43,6 +47,19 @@ OPENSEARCH_INDEX_NAME: str = os.getenv("OPENSEARCH_INDEX_NAME", "sql-agent-cache
 
 # ── OpenAI (embeddings for OpenSearch k-NN cache; text-embedding-3-small) ───────
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+# Vision gate + chart/image Q&A (Chat Completions image_url)
+OPENAI_VISION_MODEL: str = os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini").strip()
+OPENAI_VISION_TIMEOUT_SECONDS: float = float(os.getenv("OPENAI_VISION_TIMEOUT_SECONDS", "60"))
+# Truncated schema appended to OpenAI vision *answer* step only (not the gate).
+VISION_SCHEMA_CONTEXT_MAX_CHARS: int = int(os.getenv("VISION_SCHEMA_CONTEXT_MAX_CHARS", "10000"))
+
+# User message image_attachments JSONB — decoded size limits (base64 stored; DB row size bounded)
+CHAT_IMAGE_PAYLOAD_MAX_TOTAL_DECODED_BYTES: int = int(
+    os.getenv("CHAT_IMAGE_PAYLOAD_MAX_TOTAL_DECODED_BYTES", str(4 * 1024 * 1024))
+)
+CHAT_IMAGE_PAYLOAD_MAX_PER_IMAGE_DECODED_BYTES: int = int(
+    os.getenv("CHAT_IMAGE_PAYLOAD_MAX_PER_IMAGE_DECODED_BYTES", str(2 * 1024 * 1024))
+)
 
 # ── SQL retry configuration ──────────────────────────────────────────────────────
 MAX_SQL_RETRIES = int(os.getenv("MAX_SQL_RETRIES", "3"))

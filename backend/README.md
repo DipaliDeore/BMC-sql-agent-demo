@@ -14,7 +14,9 @@ python -m venv .venv
 pip install -r requirements.txt
 
 # 3. Configure environment variables
-# Edit .env and fill in your credentials (see .env file)
+# Edit .env and fill in your credentials (see .env file).
+# Optional image Q&A (OpenAI vision on `/api/query`): `OPENAI_API_KEY`, `OPENAI_VISION_MODEL` (default `gpt-4o-mini`), `OPENAI_VISION_TIMEOUT_SECONDS`.
+# User image persistence in chat JSONB: `CHAT_IMAGE_PAYLOAD_MAX_TOTAL_DECODED_BYTES` (default 4 MiB total decoded), `CHAT_IMAGE_PAYLOAD_MAX_PER_IMAGE_DECODED_BYTES` (default 2 MiB per image). Env is loaded from `backend/.env` first (see `app/config.py`).
 
 # 4. Start the server
 uvicorn app.main:app --reload
