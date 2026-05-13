@@ -8,6 +8,45 @@ def _contains_any(text: str, terms: list[str]) -> bool:
     return any(t in text for t in terms)
 
 
+def _metric_breakdown_wants_bar_chart(ql: str) -> bool:
+    """
+    Bar chart for comparing a numeric measure across categories / products / regions.
+    Covers prompts like 'revenue by category' that never say 'bar chart' explicitly.
+    """
+    metrics = [
+        "revenue",
+        "sales",
+        "amount",
+        "income",
+        "turnover",
+        "profit",
+        "margin",
+        "quantity",
+        "units sold",
+        "units ",
+    ]
+    if not _contains_any(ql, metrics):
+        return False
+    dims = [
+        "by category",
+        "per category",
+        "by product",
+        "per product",
+        "by region",
+        "per region",
+        "by segment",
+        "per segment",
+        "by brand",
+        "by seller",
+    ]
+    if _contains_any(ql, dims):
+        return True
+    # "revenue by ..." / "sales by ..." (dimension word may follow immediately)
+    if re.search(r"\b(revenue|sales|amount|income|turnover|profit)\s+by\b", ql):
+        return True
+    return False
+
+
 def _extract_month_window(text: str) -> tuple[int, int] | None:
     month_map = {
         "jan": 1,
@@ -165,7 +204,7 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
             " versus",
             " vs ",
         ],
-    ):
+    ) or _metric_breakdown_wants_bar_chart(ql):
         chart_hint = "bar"
     elif _contains_any(ql, ["distribution", "breakdown"]) or "breakdown" in intents:
         chart_hint = "pie"

@@ -134,17 +134,59 @@ def build_results_narrative(results: list[dict]) -> str | None:
     )
 
 
-def _dedupe_adjacent_paragraphs(text: str) -> str:
-    """Drop consecutive duplicate paragraphs (LLM sometimes repeats auto-narrative)."""
+def _is_single_scalar_result(results: list[dict]) -> bool:
+    if not results or len(results) != 1:
+        return False
+    row = results[0]
+    return isinstance(row, dict) and len(row) == 1
+
+
+def _dedupe_paragraphs(text: str) -> str:
+    """Drop duplicate paragraphs while preserving order."""
     parts = [p.strip() for p in (text or "").split("\n\n") if p.strip()]
     if not parts:
         return (text or "").strip()
     out: list[str] = []
+    seen: set[str] = set()
     for p in parts:
-        if out and out[-1] == p:
+        key = " ".join(p.lower().split())
+        if key in seen:
             continue
+        seen.add(key)
         out.append(p)
     return "\n\n".join(out)
+
+
+def _dedupe_adjacent_paragraphs(text: str) -> str:
+    """Drop consecutive duplicate paragraphs (LLM sometimes repeats auto-narrative)."""
+    return _dedupe_paragraphs(text)
+
+
+def finalize_explanation(results: list[dict], explanation: str) -> str:
+    """Return one user-facing explanation without repeated scalar summaries."""
+    narrative = build_results_narrative(results) if results else None
+    if narrative and _is_single_scalar_result(results):
+        return narrative
+    if narrative:
+        return merge_explanation_with_narrative(explanation, narrative)
+    return (explanation or "").strip()
+
+
+def result_sentence_for_display(
+    results: list[dict],
+    answer_template: str | None,
+    explanation: str | None,
+) -> str | None:
+    """Avoid repeating the scalar summary when it already appears in explanation."""
+    if _is_single_scalar_result(results):
+        return None
+    sentence = build_result_sentence(results, answer_template)
+    if not sentence:
+        return None
+    expl = (explanation or "").strip()
+    if expl and sentence.strip() in expl:
+        return None
+    return sentence
 
 
 def merge_explanation_with_narrative(llm_explanation: str, narrative: str | None) -> str:
@@ -152,6 +194,7 @@ def merge_explanation_with_narrative(llm_explanation: str, narrative: str | None
     llm = (llm_explanation or "").strip()
     if not narrative:
         return llm
+    narrative_text = narrative.strip()
     generic_llm = llm.lower() in (
         "",
         "query executed successfully.",
@@ -159,5 +202,7 @@ def merge_explanation_with_narrative(llm_explanation: str, narrative: str | None
         "got it!",
     )
     if generic_llm or not llm:
-        return narrative
-    return _dedupe_adjacent_paragraphs(f"{narrative}\n\n{llm}")
+        return narrative_text
+    if llm.startswith(narrative_text) or narrative_text in llm:
+        return _dedupe_paragraphs(llm)
+    return _dedupe_paragraphs(f"{narrative_text}\n\n{llm}")

@@ -108,6 +108,10 @@ def run_sql_query(sql: str) -> dict:
       2. Execute the SQL on the database
       3. Return results or detailed error information
 
+    Before filtering or aggregating on status-like columns (payment_status, etc.),
+    discover real values with a quick `SELECT DISTINCT col FROM t LIMIT 50` if
+    the schema does not list literals — do not assume synonyms (e.g. Successful vs COMPLETED).
+
     If this tool returns an error with error_type "VALIDATION" or
     "SQL_ERROR", analyze the error message, fix the SQL, and call
     this tool again with the corrected query.

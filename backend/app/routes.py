@@ -36,11 +36,12 @@ from app.database import execute_query, get_database_schema, select_sql_with_row
 from app.query_validator import validate_sql, QueryValidationError, is_dangerous_input
 from app.search import REFERENCE_TOP_K, find_similar_queries
 from app.agent_executor import generate_and_execute_with_tools
+from app.chart_inference import apply_inferred_chart_from_plan
 from app import chat_store
+from app.question_planner import build_question_plan
 from app.response_formatting import (
-    build_result_sentence,
-    build_results_narrative,
-    merge_explanation_with_narrative,
+    finalize_explanation,
+    result_sentence_for_display,
 )
 from app.vision_gate import run_vision_image_pipeline
 from app.chat_image_payload import pack_user_image_attachments_for_storage
@@ -277,21 +278,31 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
         exact_sql = exact_match["sql"]
         db_res = execute_query(exact_sql)
         if not (isinstance(db_res, dict) and "error" in db_res):
-            explanation = "I ran a matching query for your question and retrieved the results below."
-            narrative = build_results_narrative(db_res)
-            explanation = merge_explanation_with_narrative(explanation, narrative)
-            
+            explanation = finalize_explanation(
+                db_res,
+                "I ran a matching query for your question and retrieved the results below.",
+            )
+
+            plan_fast = build_question_plan(body.question, schema)
+            fast_summary: dict = {
+                "status": "success",
+                "is_multi": False,
+                "chart_config": None,
+                "results": db_res,
+            }
+            apply_inferred_chart_from_plan(fast_summary, plan_fast)
+
             return QueryResponse(
                 question=body.question,
                 sql=select_sql_with_row_limit(exact_sql),
                 results=db_res,
                 explanation=explanation,
                 row_count=len(db_res),
-                result_sentence=build_result_sentence(db_res, None),
+                result_sentence=result_sentence_for_display(db_res, None, explanation),
                 cache_references=filtered_examples or None,
                 conversation_id=conversation_id,
                 cache_doc_id=None,
-                chart_config=None,
+                chart_config=fast_summary.get("chart_config"),
             )
 
     tool_result = generate_and_execute_with_tools(
@@ -386,8 +397,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
 
     inline_results = result if row_count <= config.EXCEL_INLINE_LIMIT else []
 
-    narrative = build_results_narrative(result)
-    explanation = merge_explanation_with_narrative(explanation, narrative)
+    explanation = finalize_explanation(result, explanation)
 
     return QueryResponse(
         question=body.question,
@@ -395,7 +405,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
         results=inline_results,
         explanation=explanation,
         row_count=row_count,
-        result_sentence=build_result_sentence(result, answer_template),
+        result_sentence=result_sentence_for_display(result, answer_template, explanation),
         cache_references=filtered_examples or None,
         conversation_id=conversation_id,
         cache_doc_id=None,

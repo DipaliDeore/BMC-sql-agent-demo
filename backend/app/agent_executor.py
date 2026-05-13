@@ -18,9 +18,9 @@ from app.checkpointer import get_checkpointer
 from app.llm_errors import rate_limited
 from app.serialization import make_json_serializable
 from app.response_formatting import (
-    build_result_sentence,
     build_results_narrative,
-    merge_explanation_with_narrative,
+    finalize_explanation,
+    result_sentence_for_display,
 )
 from app.question_planner import build_question_plan
 from app.query_validator import validate_sql, QueryValidationError
@@ -30,6 +30,7 @@ from app.memory.pipeline import (
     build_memory_preamble_for_system,
     maybe_refresh_thread_memory_after_turn,
 )
+from app.chart_inference import apply_inferred_chart_from_plan
 
 
 AVAILABLE_TOOLS = [run_sql_query, render_chart]
@@ -76,6 +77,7 @@ def _prepend_system(state: dict, config: RunnableConfig) -> list:
   Step 2: After seeing the SQL result, call `render_chart` with chart_type="{chart_hint}", x_column=<exact axis/category/time column>, y_column=<exact numeric column> from those rows. If the user compares two numeric series over the same x (e.g. successful vs failed by day), rewrite SQL to one row per x with TWO numeric columns (SUM CASE / pivot), then pass the second column as y_column_2 — do NOT refuse a chart because rows are long-format; reshape the query instead.
   DO NOT put chart arguments into `run_sql_query`, and DO NOT call `run_sql_query` and `render_chart` at the same time before you have row data.
   Chart choice: use chart_type "pie" only for part-to-whole / shares; "bar" for rankings or comparing categories; "line" for trends or time-ordered series (x_column = time or order dimension).
+  Compliance: If you skip `render_chart`, the UI will show no chart — do NOT claim a pie/bar/line was displayed unless you actually called `render_chart` for that dataset.
 """
 
     system_content = f"""You are an expert SQL query generator for a MySQL database.
@@ -91,16 +93,18 @@ YOUR TASK:
 
 STRICT RULES:
 - If the user explicitly asks for a bar chart, line chart, pie chart, or time-series plot, call `render_chart` immediately after a successful `run_sql_query` for that dataset, using chart_type bar/line/pie and exact column names from the rows.
+- When the planner JSON sets needs_chart=true, you MUST call `render_chart` after the successful `run_sql_query` that answers that question (same column names as the rows). Never tell the user a chart was shown unless you called `render_chart`.
 - For "A vs B" / two metrics over time or category: return ONE pivoted query (one x, two numeric columns) and one `render_chart` with y_column and y_column_2. Do not claim charts are impossible because of long-format (date,status,count) data — pivot with conditional aggregation, then chart.
 - Max 6 tool calls
-- If the user asks for multiple distinct datasets or questions (e.g. 'How many customers and what are the top 3 products?'), you MUST explicitly make MULTIPLE PARALLEL tool calls at the exact same time by outputting an array with multiple run_sql_query calls. Do not process them one by one.{chart_instruction}
+- If the user asks for multiple distinct datasets or questions (e.g. 'How many customers and what are the top 3 products?'), you MUST explicitly make MULTIPLE PARALLEL tool calls at the exact same time by outputting an array with multiple run_sql_query calls. Do not process them one by one.
+- IF 'strategic_mode': run up to 3 parallel `run_sql_query` calls to gather evidence, then write ONE cohesive advisory answer. Do not label separate datasets as Result 1/2/3 or list raw breakdowns for the user; synthesize insights in prose only.{chart_instruction}
 - If DB_ERROR → STOP immediately
 - If SQL_ERROR → fix and retry (max 2 retries)
 - After successfully executing queries, provide your final response based on the planner strategy:
    * IF 'strategic_mode': You MUST act as a senior data analyst. Review the data returned, identify trends/anomalies, and provide a DETAILED, ACTIONABLE recommendation (at least 2-3 detailed paragraphs). Explain the 'why' behind the numbers and what the business should do next. Do NOT be concise; provide depth and insight.
    * OTHERWISE: Keep the final explanation concise (typically 2-5 lines).
-- Never return raw numbers without context; explain what each value represents.
-- If multiple values are returned, label each value clearly.
+- The UI appends an automatic plain-language summary of returned row values. Do NOT repeat that summary: do not restate the primary count or amount in "The X is Y" form, and do not paraphrase the same single scalar (e.g. do not say both "There are 3 distinct payment methods" and "The distinct payment method is 3"). Add only brief context, caveats, or next steps when useful.
+- For multi-metric or multi-row results where the auto-summary is incomplete, name each value clearly without duplicating the table.
 - Do not mention memory/cache retrieval unless the user explicitly asks.
 - If one part fails, still report successful parts.
 
@@ -109,6 +113,7 @@ SQL RULES:
 - Use ONLY given schema
 - No hallucination
 - Target dialect is MySQL/TiDB only
+- For categorical / enum columns (e.g. payment_status, order_status): NEVER guess display strings like 'Successful' vs database values like 'COMPLETED'. Run `SELECT DISTINCT column_name FROM table ORDER BY 1 LIMIT 50` (or read literals shown in the schema) and use EXACT values from the database in CASE/WHERE/GROUP BY.
 - For month-wise grouping, use MySQL date functions such as DATE_FORMAT(order_date, '%Y-%m'), MONTH(order_date), YEAR(order_date)
 - Never use SQLite/Postgres-only functions like strftime or date_trunc
 - For cross-table constraints (e.g., demand + stock), use proper joins or CTEs
@@ -201,6 +206,69 @@ def _parse_tool_content(msg: ToolMessage) -> dict:
             return {}
 
 
+def _chart_payload_to_config(data: dict) -> dict[str, Any] | None:
+    """If tool payload is a render_chart marker, return normalized chart_config; else None."""
+    if data.get("chart_type") in ("pie", "bar", "line"):
+        cfg: dict[str, Any] = {
+            "chart_type": data["chart_type"],
+            "x_column": data.get("x_column"),
+            "y_column": data.get("y_column"),
+            "is_pie_chart": data["chart_type"] == "pie",
+        }
+        y2 = data.get("y_column_2")
+        if isinstance(y2, str) and y2.strip():
+            cfg["y_column_2"] = y2.strip()
+        return cfg
+    if data.get("is_pie_chart") is True:
+        return {
+            "chart_type": "pie",
+            "x_column": data.get("label_column"),
+            "y_column": data.get("value_column"),
+            "is_pie_chart": True,
+        }
+    return None
+
+
+def _row_matches_chart_config(first_row: dict, conf: dict[str, Any]) -> bool:
+    xc = conf.get("x_column")
+    yc = conf.get("y_column")
+    if not isinstance(first_row, dict) or xc not in first_row or yc not in first_row:
+        return False
+    y2 = conf.get("y_column_2")
+    if isinstance(y2, str) and y2.strip():
+        if y2.strip() not in first_row:
+            return False
+    return True
+
+
+def _assign_charts_by_tool_order(
+    successful_tools: list[dict],
+    tool_sequence: list[tuple[str, Any]],
+) -> dict[int, dict[str, Any]]:
+    """
+    Bind each render_chart to the nearest preceding run_sql_query result whose
+    first row contains the declared x/y (and y2) columns — preferring the most
+    recent matching SQL so a corrected query 'wins' over an earlier bad one.
+    """
+    assignments: dict[int, dict[str, Any]] = {}
+    last_sql_idx = -1
+    for kind, payload in tool_sequence:
+        if kind == "sql":
+            last_sql_idx = payload
+        elif kind == "chart":
+            conf = payload
+            if not isinstance(conf, dict):
+                continue
+            for j in range(last_sql_idx, -1, -1):
+                rows = successful_tools[j].get("results") or []
+                if not rows or not isinstance(rows[0], dict):
+                    continue
+                if _row_matches_chart_config(rows[0], conf):
+                    assignments[j] = conf
+                    break
+    return assignments
+
+
 def _execute_safe_sql(sql: str) -> dict[str, Any]:
     try:
         validated = validate_sql(sql)
@@ -229,7 +297,7 @@ def _build_sub_response(question: str, data: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(rows, list):
         rows = [rows]
     narrative = build_results_narrative(rows) or "This section contains the query output details."
-    sentence = build_result_sentence(rows, None) or ""
+    sentence = result_sentence_for_display(rows, None, narrative) or ""
     return {
         "question": question,
         "sql": (data.get("sql") or "").strip(),
@@ -252,6 +320,29 @@ def _last_human_index(messages: list) -> int:
     return -1
 
 
+def apply_strategic_response_shape(summary: dict[str, Any], plan: dict[str, Any]) -> None:
+    """Strategic advice should read as one narrative, not separate Result 1/2/3 blocks."""
+    if plan.get("strategy") != "strategic_mode" or summary.get("status") != "success":
+        return
+
+    explanation = (summary.get("explanation") or "").strip()
+    if not explanation:
+        parts = [
+            (sub.get("explanation") or "").strip()
+            for sub in summary.get("sub_responses") or []
+            if (sub.get("explanation") or "").strip()
+        ]
+        explanation = "\n\n".join(parts)
+
+    summary["explanation"] = explanation
+    summary["is_multi"] = False
+    summary["sub_responses"] = []
+    summary["results"] = []
+    summary["row_count"] = 0
+    summary["sql_query"] = ""
+    summary["chart_config"] = None
+
+
 def _summarize_from_messages(messages: list) -> dict:
     """Derive sql_query, results, explanation, status from graph message history for this turn."""
     idx = _last_human_index(messages)
@@ -259,9 +350,9 @@ def _summarize_from_messages(messages: list) -> dict:
 
     had_tool_attempt = False
     last_ai_text = ""
-    successful_tools = []
-    failed_tools = []
-    chart_configs: list[dict[str, Any]] = []
+    successful_tools: list[dict] = []
+    failed_tools: list[dict] = []
+    tool_sequence: list[tuple[str, Any]] = []
 
     for msg in tail:
         if isinstance(msg, ToolMessage):
@@ -276,29 +367,12 @@ def _summarize_from_messages(messages: list) -> dict:
                     "status": "db_error",
                 }
             if data.get("success") is True:
-                if data.get("chart_type") in ("pie", "bar", "line"):
-                    cfg_entry: dict[str, Any] = {
-                        "chart_type": data["chart_type"],
-                        "x_column": data.get("x_column"),
-                        "y_column": data.get("y_column"),
-                        "is_pie_chart": data["chart_type"] == "pie",
-                    }
-                    y2 = data.get("y_column_2")
-                    if isinstance(y2, str) and y2.strip():
-                        cfg_entry["y_column_2"] = y2.strip()
-                    chart_configs.append(cfg_entry)
-                elif data.get("is_pie_chart") is True:
-                    # Legacy tool payloads (label/value only)
-                    chart_configs.append(
-                        {
-                            "chart_type": "pie",
-                            "x_column": data.get("label_column"),
-                            "y_column": data.get("value_column"),
-                            "is_pie_chart": True,
-                        }
-                    )
+                chart_cfg = _chart_payload_to_config(data)
+                if chart_cfg is not None:
+                    tool_sequence.append(("chart", chart_cfg))
                 else:
                     successful_tools.append(data)
+                    tool_sequence.append(("sql", len(successful_tools) - 1))
             elif data.get("error"):
                 failed_tools.append(data)
         elif isinstance(msg, AIMessage):
@@ -306,21 +380,7 @@ def _summarize_from_messages(messages: list) -> dict:
             if txt:
                 last_ai_text = txt
 
-    def _find_matching_chart(rows, configs):
-        if not rows or not configs:
-            return None
-        first_row = rows[0]
-        for conf in configs:
-            xc = conf.get("x_column")
-            yc = conf.get("y_column")
-            if xc not in first_row or yc not in first_row:
-                continue
-            y2 = conf.get("y_column_2")
-            if isinstance(y2, str) and y2.strip():
-                if y2.strip() not in first_row:
-                    continue
-            return conf
-        return None
+    chart_by_sql_index = _assign_charts_by_tool_order(successful_tools, tool_sequence)
 
     if len(successful_tools) == 1 and not failed_tools:
         data = successful_tools[0]
@@ -328,8 +388,7 @@ def _summarize_from_messages(messages: list) -> dict:
         if not isinstance(rows, list):
             rows = [rows]
 
-        narrative = build_results_narrative(rows)
-        explanation = merge_explanation_with_narrative(last_ai_text.strip(), narrative)
+        explanation = finalize_explanation(rows, last_ai_text.strip())
         if not explanation:
             explanation = _build_success_explanation(len(rows))
 
@@ -340,7 +399,7 @@ def _summarize_from_messages(messages: list) -> dict:
             "row_count": len(rows),
             "status": "success",
             "is_multi": False,
-            "chart_config": _find_matching_chart(rows, chart_configs),
+            "chart_config": chart_by_sql_index.get(0),
         }
 
     elif len(successful_tools) > 1 or (successful_tools and failed_tools):
@@ -350,7 +409,7 @@ def _summarize_from_messages(messages: list) -> dict:
             if not isinstance(rows, list):
                 rows = [rows]
             narrative = build_results_narrative(rows) or "This section contains the query output details."
-            result_sentence = build_result_sentence(rows, None) or ""
+            result_sentence = result_sentence_for_display(rows, None, narrative) or ""
             sub_responses.append({
                 "question": f"Result {i + 1}",
                 "sql": (data.get("sql") or "").strip(),
@@ -361,7 +420,7 @@ def _summarize_from_messages(messages: list) -> dict:
                 "cache_references": [],
                 "status": "success",
                 "cache_doc_id": None,
-                "chart_config": _find_matching_chart(rows, chart_configs),
+                "chart_config": chart_by_sql_index.get(i),
             })
 
         for i, data in enumerate(failed_tools):
@@ -521,6 +580,8 @@ def generate_and_execute_with_tools(
     messages = result.get("messages") or []
     maybe_refresh_thread_memory_after_turn(tid, messages)
     summary = _summarize_from_messages(messages)
+    apply_inferred_chart_from_plan(summary, plan)
+    apply_strategic_response_shape(summary, plan)
     if summary.get("status") == "success" and plan.get("assumptions"):
         summary["explanation"] = (
             f"{summary.get('explanation', '').strip()}\n\nAssumption used: {plan['assumptions'][0]}"

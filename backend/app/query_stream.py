@@ -33,17 +33,15 @@ from app.agent_executor import (
     _get_agent_app,
     _parse_tool_content,
     _summarize_from_messages,
+    apply_strategic_response_shape,
     generate_and_execute_with_tools,
 )
 from app.database import execute_query, get_database_schema, select_sql_with_row_limit
 from app.memory.pipeline import maybe_refresh_thread_memory_after_turn
 from app.question_planner import build_question_plan
+from app.chart_inference import apply_inferred_chart_from_plan
 from app.query_validator import QueryValidationError, validate_sql, is_dangerous_input
-from app.response_formatting import (
-    build_result_sentence,
-    build_results_narrative,
-    merge_explanation_with_narrative,
-)
+from app.response_formatting import finalize_explanation, result_sentence_for_display
 from app.search import REFERENCE_TOP_K, find_similar_queries
 from app.vision_gate import run_vision_image_pipeline
 def _sse_data(obj: dict) -> bytes:
@@ -224,6 +222,9 @@ async def _stream_react_agent(
     await asyncio.to_thread(maybe_refresh_thread_memory_after_turn, thread_id, messages)
 
     summary = _summarize_from_messages(messages)
+    plan = build_question_plan(question, schema)
+    apply_inferred_chart_from_plan(summary, plan)
+    apply_strategic_response_shape(summary, plan)
     yield {"type": "status", "content": "done"}
     yield {"type": "final", "content": summary}
 
@@ -258,8 +259,7 @@ def _final_http_payload_from_tool_result(
     row_count = int(tool_result.get("row_count") or len(results))
     answer_template = tool_result.get("answer_template")
 
-    narrative = build_results_narrative(results) if results else None
-    explanation_out = merge_explanation_with_narrative(explanation, narrative)
+    explanation_out = finalize_explanation(results, explanation)
 
     # Excel export logic
     excel_download_url = None
@@ -285,7 +285,7 @@ def _final_http_payload_from_tool_result(
         "results": inline_results, 
         "explanation": explanation_out,
         "row_count": row_count,
-        "result_sentence": build_result_sentence(results, answer_template),
+        "result_sentence": result_sentence_for_display(results, answer_template, explanation_out),
         "cache_references": cache_refs,
         "is_multi": bool(tool_result.get("is_multi")),
         "sub_responses": tool_result.get("sub_responses") or [],
@@ -521,6 +521,7 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
         )
         return
 
+    apply_inferred_chart_from_plan(tool_result, plan)
     final = _materialize_http_final(question, conversation_id, tool_result, cache_refs or None)
     final_payload = _chat_payload_from_final(final)
     row = chat_store.add_message(
