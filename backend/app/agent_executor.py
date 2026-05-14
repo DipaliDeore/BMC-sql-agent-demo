@@ -335,12 +335,10 @@ def apply_strategic_response_shape(summary: dict[str, Any], plan: dict[str, Any]
         explanation = "\n\n".join(parts)
 
     summary["explanation"] = explanation
-    summary["is_multi"] = False
-    summary["sub_responses"] = []
-    summary["results"] = []
-    summary["row_count"] = 0
-    summary["sql_query"] = ""
-    summary["chart_config"] = None
+
+    if summary.get("is_multi"):
+        for sub in summary.get("sub_responses") or []:
+            sub["explanation"] = ""
 
 
 def _summarize_from_messages(messages: list) -> dict:

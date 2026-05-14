@@ -70,6 +70,7 @@ function fromApiMessage(row) {
     errorText: p.errorText,
     cache_doc_id: p.cache_doc_id ?? null,
     excel_download_url: p.excel_download_url ?? null,
+    chart_config: p.chart_config ?? null,
   };
 }
 
