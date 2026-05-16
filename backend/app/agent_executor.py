@@ -15,7 +15,9 @@ from langgraph.prebuilt import create_react_agent
 from app.tools.sql_tools import run_sql_query, render_chart
 from app import config
 from app.checkpointer import get_checkpointer
-from app.llm_errors import rate_limited
+from app.llm_errors import invoke_with_retry, rate_limited
+from app.strategic_pipeline import execute_strategic_pipeline, should_use_strategic_pipeline
+from app.trend_pipeline import execute_trend_pipeline, should_use_trend_pipeline
 from app.serialization import make_json_serializable
 from app.response_formatting import (
     build_results_narrative,
@@ -97,11 +99,11 @@ STRICT RULES:
 - For "A vs B" / two metrics over time or category: return ONE pivoted query (one x, two numeric columns) and one `render_chart` with y_column and y_column_2. Do not claim charts are impossible because of long-format (date,status,count) data — pivot with conditional aggregation, then chart.
 - Max 6 tool calls
 - If the user asks for multiple distinct datasets or questions (e.g. 'How many customers and what are the top 3 products?'), you MUST explicitly make MULTIPLE PARALLEL tool calls at the exact same time by outputting an array with multiple run_sql_query calls. Do not process them one by one.
-- IF 'strategic_mode': run up to 3 parallel `run_sql_query` calls to gather evidence, then write ONE cohesive advisory answer. Do not label separate datasets as Result 1/2/3 or list raw breakdowns for the user; synthesize insights in prose only.{chart_instruction}
+- IF 'strategic_mode': run at most 2 parallel `run_sql_query` calls to gather evidence, then write ONE cohesive advisory answer (about 2 short paragraphs). Do not label separate datasets as Result 1/2/3 or list raw breakdowns for the user; synthesize insights in prose only.{chart_instruction}
 - If DB_ERROR → STOP immediately
 - If SQL_ERROR → fix and retry (max 2 retries)
 - After successfully executing queries, provide your final response based on the planner strategy:
-   * IF 'strategic_mode': You MUST act as a senior data analyst. Review the data returned, identify trends/anomalies, and provide a DETAILED, ACTIONABLE recommendation (at least 2-3 detailed paragraphs). Explain the 'why' behind the numbers and what the business should do next. Do NOT be concise; provide depth and insight.
+   * IF 'strategic_mode': Act as a senior data analyst. Review the data returned, identify trends/anomalies, and provide actionable recommendations in about 2 concise paragraphs. Explain the 'why' behind the numbers and what the business should do next.
    * OTHERWISE: Keep the final explanation concise (typically 2-5 lines).
 - The UI appends an automatic plain-language summary of returned row values. Do NOT repeat that summary: do not restate the primary count or amount in "The X is Y" form, and do not paraphrase the same single scalar (e.g. do not say both "There are 3 distinct payment methods" and "The distinct payment method is 3"). Add only brief context, caveats, or next steps when useful.
 - For multi-metric or multi-row results where the auto-summary is incomplete, name each value clearly without duplicating the table.
@@ -322,7 +324,12 @@ def _last_human_index(messages: list) -> int:
 
 def apply_strategic_response_shape(summary: dict[str, Any], plan: dict[str, Any]) -> None:
     """Strategic advice should read as one narrative, not separate Result 1/2/3 blocks."""
-    if plan.get("strategy") != "strategic_mode" or summary.get("status") != "success":
+    from app.strategic_pipeline import STRATEGIC_RESPONSE_KIND, is_strategic_advisory_result
+
+    is_strategic = plan.get("strategy") == "strategic_mode" or is_strategic_advisory_result(
+        summary
+    )
+    if not is_strategic or summary.get("status") != "success":
         return
 
     explanation = (summary.get("explanation") or "").strip()
@@ -339,7 +346,7 @@ def apply_strategic_response_shape(summary: dict[str, Any], plan: dict[str, Any]
     summary["sub_responses"] = []
     summary["results"] = []
     summary["row_count"] = 0
-    summary["sql_query"] = ""
+    summary["response_kind"] = STRATEGIC_RESPONSE_KIND
     summary["chart_config"] = None
 
 
@@ -545,6 +552,22 @@ def generate_and_execute_with_tools(
                     ],
                 }
 
+    if should_use_trend_pipeline(question, plan):
+        trend_result = execute_trend_pipeline(question, schema, references_text)
+        if trend_result is not None:
+            return trend_result
+
+    if should_use_strategic_pipeline(question, plan):
+        strategic_result = execute_strategic_pipeline(
+            question,
+            schema,
+            references_text,
+            assumptions=plan.get("assumptions") or [],
+        )
+        if strategic_result is not None:
+            apply_strategic_response_shape(strategic_result, plan)
+            return strategic_result
+
     tid = (thread_id or "").strip() or str(uuid.uuid4())
     app = _get_agent_app()
     cfg: RunnableConfig = {
@@ -558,9 +581,11 @@ def generate_and_execute_with_tools(
     }
 
     try:
-        result = app.invoke(
-            {"messages": [HumanMessage(content=question.strip())]},
-            cfg,
+        result = invoke_with_retry(
+            lambda: app.invoke(
+                {"messages": [HumanMessage(content=question.strip())]},
+                cfg,
+            ),
         )
     except Exception as e:
         error_str = str(e).lower()

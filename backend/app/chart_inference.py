@@ -51,6 +51,8 @@ def infer_chart_config(plan: dict[str, Any], rows: list[dict]) -> dict[str, Any]
     non_numeric_keys = [k for k in keys if not _is_numeric_like(first.get(k))]
 
     if hint == "line":
+        if len(rows) < 2:
+            return None
         if len(non_numeric_keys) >= 1 and len(numeric_keys) >= 2:
             x_key = non_numeric_keys[0]
             for k in non_numeric_keys:

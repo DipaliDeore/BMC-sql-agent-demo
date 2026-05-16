@@ -372,12 +372,22 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
     answer_template = tool_result.get("answer_template")
 
     if not result:
+        from app.strategic_pipeline import is_strategic_advisory_result
+
+        if is_strategic_advisory_result(tool_result):
+            empty_explanation = finalize_explanation([], explanation)
+        elif (explanation or "").strip():
+            empty_explanation = explanation.strip()
+        else:
+            empty_explanation = (
+                "I ran the query but nothing matched. Try broadening your filters."
+            )
         return QueryResponse(
             question=body.question,
             sql=safe_sql,
             results=[],
             row_count=0,
-            explanation="I ran the query but nothing matched. Try broadening your filters.",
+            explanation=empty_explanation,
             conversation_id=conversation_id,
         )
 
@@ -397,7 +407,8 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
 
     inline_results = result if row_count <= config.EXCEL_INLINE_LIMIT else []
 
-    explanation = finalize_explanation(result, explanation)
+    rk = tool_result.get("response_kind")
+    explanation = finalize_explanation(result, explanation, response_kind=rk)
 
     return QueryResponse(
         question=body.question,
@@ -405,7 +416,9 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
         results=inline_results,
         explanation=explanation,
         row_count=row_count,
-        result_sentence=result_sentence_for_display(result, answer_template, explanation),
+        result_sentence=result_sentence_for_display(
+            result, answer_template, explanation, response_kind=rk
+        ),
         cache_references=filtered_examples or None,
         conversation_id=conversation_id,
         cache_doc_id=None,

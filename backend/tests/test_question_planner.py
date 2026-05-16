@@ -20,6 +20,25 @@ def test_planner_detects_strategic_recommendation():
     assert "strategic_recommendation" in plan["intents"]
 
 
+def test_planner_detects_returns_reduction_as_strategic():
+    plan = build_question_plan(
+        "How can I reduce product returns?",
+        schema="Table: orders\nTable: order_items\nTable: products",
+    )
+    assert plan["strategy"] == "strategic_mode"
+    assert "strategic_recommendation" in plan["intents"]
+
+
+def test_should_use_strategic_pipeline_for_advisory_phrasing():
+    from app.strategic_pipeline import should_use_strategic_pipeline
+
+    plan = build_question_plan(
+        "How can I reduce product returns?",
+        schema="Table: products",
+    )
+    assert should_use_strategic_pipeline("How can I reduce product returns?", plan)
+
+
 def test_revenue_by_category_requests_bar_chart():
     plan = build_question_plan(
         "Give me revenue by category",

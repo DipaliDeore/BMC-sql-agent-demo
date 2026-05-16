@@ -39,6 +39,8 @@ from app.agent_executor import (
 from app.database import execute_query, get_database_schema, select_sql_with_row_limit
 from app.memory.pipeline import maybe_refresh_thread_memory_after_turn
 from app.question_planner import build_question_plan
+from app.strategic_pipeline import is_strategic_advisory_result, should_use_strategic_pipeline
+from app.trend_pipeline import should_use_trend_pipeline
 from app.chart_inference import apply_inferred_chart_from_plan
 from app.query_validator import QueryValidationError, validate_sql, is_dangerous_input
 from app.response_formatting import finalize_explanation, result_sentence_for_display
@@ -259,7 +261,11 @@ def _final_http_payload_from_tool_result(
     row_count = int(tool_result.get("row_count") or len(results))
     answer_template = tool_result.get("answer_template")
 
-    explanation_out = finalize_explanation(results, explanation)
+    explanation_out = finalize_explanation(
+        results,
+        explanation,
+        response_kind=tool_result.get("response_kind"),
+    )
 
     # Excel export logic
     excel_download_url = None
@@ -285,7 +291,12 @@ def _final_http_payload_from_tool_result(
         "results": inline_results, 
         "explanation": explanation_out,
         "row_count": row_count,
-        "result_sentence": result_sentence_for_display(results, answer_template, explanation_out),
+        "result_sentence": result_sentence_for_display(
+            results,
+            answer_template,
+            explanation_out,
+            response_kind=tool_result.get("response_kind"),
+        ),
         "cache_references": cache_refs,
         "is_multi": bool(tool_result.get("is_multi")),
         "sub_responses": tool_result.get("sub_responses") or [],
@@ -294,6 +305,7 @@ def _final_http_payload_from_tool_result(
         "assistant_message_id": assistant_message_id,
         "chart_config": tool_result.get("chart_config"),
         "excel_download_url": excel_download_url,
+        "response_kind": tool_result.get("response_kind"),
     }
 
 
@@ -316,6 +328,7 @@ def _chat_payload_from_final(final: dict[str, Any]) -> dict[str, Any]:
         "cache_doc_id": final.get("cache_doc_id"),
         "chart_config": final.get("chart_config"),
         "excel_download_url": final.get("excel_download_url"),
+        "response_kind": final.get("response_kind"),
     }
 
 
@@ -333,7 +346,12 @@ def _materialize_http_final(
         tr["explanation"] = "Sorry, could not generate a valid query. Please try rephrasing."
 
     # Single-query empty rows only: multi-query uses top-level results=[] with data in sub_responses.
-    if status == "success" and not (tr.get("results") or []):
+    # Strategic/advisory answers intentionally omit result rows — keep the narrative explanation.
+    if (
+        status == "success"
+        and not (tr.get("results") or [])
+        and not is_strategic_advisory_result(tr)
+    ):
         subs = tr.get("sub_responses") or []
         has_sub_rows = any(len(s.get("results") or []) > 0 for s in subs)
         if not tr.get("is_multi") and not has_sub_rows:
@@ -433,9 +451,14 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
     tool_result: dict[str, Any] | None = None
     plan = build_question_plan(question, schema)
 
-    # For strategic/deterministic intents, use planner-backed executor directly
-    # so strategic recommendations don't fall into not_related in stream mode.
-    if plan.get("strategy") == "deterministic_sql":
+    # Planner-backed executor for deterministic SQL and strategic/advisory questions
+    # (avoids a heavy multi-turn ReAct loop that exhausts LLM quota).
+    if (
+        plan.get("strategy") == "deterministic_sql"
+        or should_use_trend_pipeline(question, plan)
+        or should_use_strategic_pipeline(question, plan)
+    ):
+        yield _sse_data({"type": "status", "content": "thinking"})
         tool_result = await loop.run_in_executor(
             None,
             functools.partial(
@@ -446,6 +469,16 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
                 thread_id=conversation_id,
             ),
         )
+        if tool_result and (tool_result.get("sql_query") or "").strip():
+            yield _sse_data({"type": "status", "content": "executing_sql"})
+            for part in (tool_result.get("sql_query") or "").split(";"):
+                sql_part = part.strip()
+                if sql_part:
+                    yield _sse_data({"type": "sql", "content": sql_part})
+        if tool_result and isinstance(tool_result.get("results"), list):
+            for row_data in tool_result["results"]:
+                if isinstance(row_data, dict):
+                    yield _sse_data({"type": "data", "content": row_data})
 
     # Fast Path: exact cache match bypasses LLM to save quota
     if tool_result is None and cache_refs and cache_refs[0].get("score", 0.0) >= 0.99:
@@ -523,6 +556,12 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
 
     apply_inferred_chart_from_plan(tool_result, plan)
     final = _materialize_http_final(question, conversation_id, tool_result, cache_refs or None)
+    if final.get("response_kind") == "strategic_advisory":
+        expl = (final.get("explanation") or "").strip()
+        if expl:
+            chunk_size = 64
+            for i in range(0, len(expl), chunk_size):
+                yield _sse_data({"type": "token", "content": expl[i : i + chunk_size]})
     final_payload = _chat_payload_from_final(final)
     row = chat_store.add_message(
         conversation_id,

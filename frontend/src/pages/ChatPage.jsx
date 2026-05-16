@@ -70,6 +70,8 @@ function fromApiMessage(row) {
     errorText: p.errorText,
     cache_doc_id: p.cache_doc_id ?? null,
     excel_download_url: p.excel_download_url ?? null,
+    chart_config: p.chart_config ?? null,
+    response_kind: p.response_kind ?? null,
   };
 }
 
@@ -100,14 +102,6 @@ export default function ChatPage({ theme, toggleTheme }) {
     setLoadingByChat((prev) => ({ ...prev, [chatId]: value }));
   }, []);
 
-  const mergeServerMessages = useCallback((existing, rawRows) => {
-    const serverMessages = rawRows.map(fromApiMessage);
-    const localStreaming = (existing || []).filter((m) => m?.streaming);
-    const localIds = new Set(serverMessages.map((m) => String(m.id)));
-    const pendingStreaming = localStreaming.filter((m) => !localIds.has(String(m.id)));
-    return [...serverMessages, ...pendingStreaming];
-  }, []);
-
   const refreshChats = useCallback(async () => {
     const list = await listChats();
     setChats(list);
@@ -116,11 +110,15 @@ export default function ChatPage({ theme, toggleTheme }) {
 
   const loadMessages = useCallback(async (chatId) => {
     const raw = await getChatMessages(chatId);
-    setMessagesByChat((prev) => ({
-      ...prev,
-      [chatId]: mergeServerMessages(prev[chatId] || [], raw),
-    }));
-  }, [mergeServerMessages]);
+    setMessagesByChat((prev) => {
+      const existing = prev[chatId] || [];
+      const streamingOnly = existing.filter((m) => m?.streaming);
+      if (streamingOnly.length > 0) {
+        return { ...prev, [chatId]: [...raw.map(fromApiMessage), ...streamingOnly] };
+      }
+      return { ...prev, [chatId]: raw.map(fromApiMessage) };
+    });
+  }, []);
 
   // ✅ FIXED handleSend
   async function handleSend(question) {
@@ -208,14 +206,17 @@ export default function ChatPage({ theme, toggleTheme }) {
 
                 if (evt.type === "final") {
                   const d = evt.content || {};
+                  const sid = d.assistant_message_id ?? null;
                   return {
-                    id: assistantId,
-                    serverMessageId: d.assistant_message_id ?? null,
+                    id: sid ? `db-${sid}` : assistantId,
+                    serverMessageId: sid,
                     role: "assistant",
-                    sql: d.sql,
-                    results: d.results,
-                    explanation: d.explanation,
-                    row_count: d.row_count,
+                    streaming: false,
+                    content: d.explanation ?? "",
+                    sql: d.sql ?? "",
+                    results: d.results ?? [],
+                    explanation: d.explanation ?? "",
+                    row_count: d.row_count ?? 0,
                     result_sentence: d.result_sentence ?? null,
                     cache_references: d.cache_references ?? null,
                     is_multi: d.is_multi ?? false,
@@ -225,6 +226,7 @@ export default function ChatPage({ theme, toggleTheme }) {
                     cache_doc_id: d.cache_doc_id ?? null,
                     chart_config: d.chart_config ?? null,
                     excel_download_url: d.excel_download_url ?? null,
+                    response_kind: d.response_kind ?? null,
                   };
                 }
 

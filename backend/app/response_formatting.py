@@ -73,12 +73,27 @@ def build_result_sentence(results: list[dict], answer_template: str | None = Non
     return f"The {metric_phrase_for_column(key)} is {formatted}."
 
 
+def _is_time_series_result_row(row: dict) -> bool:
+    """One time bucket column + one numeric measure (not a flat list of unrelated metrics)."""
+    if not isinstance(row, dict) or len(row) < 2:
+        return False
+    time_keys = [
+        k
+        for k in row
+        if any(t in (k or "").lower() for t in ("date", "month", "day", "week", "year", "period"))
+    ]
+    numeric_keys = [k for k, v in row.items() if _is_numeric_like(v) and k not in time_keys]
+    return bool(time_keys) and bool(numeric_keys)
+
+
 def build_results_narrative(results: list[dict]) -> str | None:
     """
     Human-readable summary grounded in actual cell values (for chat + LangSmith clarity).
     Single row with multiple metrics -> simple sentences; many rows -> short intro pointing to table.
     """
     if not results:
+        return None
+    if len(results) == 1 and _is_time_series_result_row(results[0]):
         return None
     if len(results) > 1:
         first_row = results[0] if isinstance(results[0], dict) else {}
@@ -162,8 +177,15 @@ def _dedupe_adjacent_paragraphs(text: str) -> str:
     return _dedupe_paragraphs(text)
 
 
-def finalize_explanation(results: list[dict], explanation: str) -> str:
+def finalize_explanation(
+    results: list[dict],
+    explanation: str,
+    *,
+    response_kind: str | None = None,
+) -> str:
     """Return one user-facing explanation without repeated scalar summaries."""
+    if response_kind in ("trend_series", "strategic_advisory"):
+        return (explanation or "").strip()
     narrative = build_results_narrative(results) if results else None
     if narrative and _is_single_scalar_result(results):
         return narrative
@@ -176,8 +198,14 @@ def result_sentence_for_display(
     results: list[dict],
     answer_template: str | None,
     explanation: str | None,
+    *,
+    response_kind: str | None = None,
 ) -> str | None:
     """Avoid repeating the scalar summary when it already appears in explanation."""
+    if response_kind in ("trend_series", "strategic_advisory"):
+        return None
+    if results and len(results) == 1 and _is_time_series_result_row(results[0]):
+        return None
     if _is_single_scalar_result(results):
         return None
     sentence = build_result_sentence(results, answer_template)

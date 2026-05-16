@@ -9,7 +9,7 @@ import json
 import re
 import uuid
 from decimal import Decimal
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from typing import Any
 
 # pyrefly: ignore [missing-import]
@@ -18,18 +18,26 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from app.checkpointer import get_postgres_pool
+from app.serialization import make_json_serializable
 
 _MEM_CHATS: dict[str, dict[str, Any]] = {}
 _MEM_MESSAGES: dict[str, list[dict[str, Any]]] = {}
 
 
 def _json_safe_payload(value: Any) -> Any:
+    # Handle datetime and date objects
+    if isinstance(value, (date, datetime)):
+        return make_json_serializable(value)
+    
     if isinstance(value, Decimal):
         return str(value)
+    
     if isinstance(value, dict):
         return {k: _json_safe_payload(v) for k, v in value.items()}
+    
     if isinstance(value, list):
         return [_json_safe_payload(v) for v in value]
+    
     return value
 
 

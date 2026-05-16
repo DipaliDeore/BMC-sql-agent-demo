@@ -97,7 +97,43 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
         intents.append("breakdown")
     if _contains_any(ql, ["vs", "versus", "compare", "top ", "bottom ", "growth", "decline", "trend"]):
         intents.append("comparative_or_trend")
-    if _contains_any(ql, ["increase sales", "focus on", "why did", "recommend", "improve", "analyze", "analysis", "insight", "how to", "what should"]):
+    strategic_phrases = [
+        "increase sales",
+        "increase profit",
+        "increase revenue",
+        "focus on",
+        "why did",
+        "recommend",
+        "improve",
+        "analyze",
+        "analysis",
+        "insight",
+        "how to",
+        "how can",
+        "how do",
+        "how should",
+        "what should",
+        "what can",
+        "reduce ",
+        "boost ",
+        "optimize",
+        "target ",
+        "promote",
+        "retain",
+        "churn",
+        "margin",
+        "returns",
+        "competitor",
+        "pricing",
+        "price competition",
+        "underperform",
+        "out of stock",
+        "low margin",
+        "most valuable",
+        "likely to",
+        "ways to",
+    ]
+    if _contains_any(ql, strategic_phrases):
         intents.append("strategic_recommendation")
     if _contains_any(ql, ["low stock", "warehouse", "delayed", "churn", "high demand", "frequently ordered"]):
         intents.append("operational_alert")

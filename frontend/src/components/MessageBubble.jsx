@@ -7,9 +7,35 @@ import ResultTable from "./ResultTable";
 import SqlViewer from "./SqlViewer";
 import MessageFeedback from "./MessageFeedback";
 import ChartPanel from "./ChartPanel";
+import AdvisoryMarkdown from "./AdvisoryMarkdown";
 import { hasRenderableChart } from "./chartConfig";
+import { isStrategicAdvisoryMessage, splitSqlStatements } from "./messageFormat";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+
+function SqlStatements({ sql, theme }) {
+  const statements = splitSqlStatements(sql);
+  if (!statements.length) return null;
+
+  if (statements.length === 1) {
+    return (
+      <div className="sql-block">
+        <SqlViewer sql={statements[0]} theme={theme} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="sql-blocks-stack">
+      {statements.map((stmt, index) => (
+        <div key={index} className="sql-block">
+          <p className="sql-block-label">Query {index + 1}</p>
+          <SqlViewer sql={stmt} theme={theme} />
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function MessageBubble({ message, theme, pairedUserQuery = "" }) {
   const feedbackQuery = (pairedUserQuery || message.original_question || "").trim();
@@ -61,21 +87,15 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
           )}
 
           {message.streamText ? (
-            <div
+            <AdvisoryMarkdown
+              explanation={message.streamText + "▍"}
               className="msg-body markdown-wrapper"
-              style={{
-                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
-                fontSize: "13px",
-                lineHeight: 1.45,
-              }}
-            >
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.streamText + "▍"}</ReactMarkdown>
-            </div>
+            />
           ) : null}
 
           {message.streamSql ? (
             <div style={{ marginTop: "12px" }}>
-              <SqlViewer sql={message.streamSql} theme={theme} />
+              <SqlStatements sql={message.streamSql} theme={theme} />
             </div>
           ) : null}
 
@@ -174,14 +194,27 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
     );
   }
 
+  const isAdvisory = isStrategicAdvisoryMessage(message);
+  const explanationText = (message.explanation || message.content || "").trim();
+
   return (
     <div className="msg-animate" style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
-      <div className="assistant-msg-panel">
-        {message.explanation && (
-          <div className="msg-body markdown-wrapper" style={{ marginBottom: message.result_sentence || message.results?.length || message.excel_download_url ? "14px" : 0 }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.explanation}</ReactMarkdown>
+      <div className={`assistant-msg-panel${isAdvisory ? " assistant-msg-panel--advisory" : ""}`}>
+        {isAdvisory && explanationText ? (
+          <AdvisoryMarkdown explanation={explanationText} />
+        ) : explanationText ? (
+          <div
+            className="msg-body markdown-wrapper"
+            style={{
+              marginBottom:
+                message.result_sentence || message.results?.length || message.excel_download_url
+                  ? "14px"
+                  : 0,
+            }}
+          >
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{explanationText}</ReactMarkdown>
           </div>
-        )}
+        ) : null}
 
         {/* Excel Download Button */}
         {message.excel_download_url && (
@@ -245,8 +278,9 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
         )}
 
         {message.sql && (
-          <div style={{ marginTop: "8px" }}>
-            <SqlViewer sql={message.sql} theme={theme} />
+          <div className={isAdvisory ? "advisory-sql-section" : ""} style={{ marginTop: isAdvisory ? "16px" : "8px" }}>
+            {isAdvisory ? <p className="sql-section-label">Queries used</p> : null}
+            <SqlStatements sql={message.sql} theme={theme} />
           </div>
         )}
 
