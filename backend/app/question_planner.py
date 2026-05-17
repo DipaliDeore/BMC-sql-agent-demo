@@ -8,6 +8,46 @@ def _contains_any(text: str, terms: list[str]) -> bool:
     return any(t in text for t in terms)
 
 
+def _is_list_or_table_request(ql: str) -> bool:
+    """Raw row dumps (e.g. 'give me data of customers') should not get charts."""
+    if _contains_any(
+        ql,
+        [
+            "give me data",
+            "show me data",
+            "get data",
+            "list all",
+            "list the",
+            "all records",
+            "all rows",
+            "table of",
+            "details of",
+            "data of",
+            "records of",
+            "show all",
+            "give me all",
+        ],
+    ):
+        return True
+    if re.search(
+        r"\b(show|list|get|give|fetch|display)\b.{0,40}\b(customers?|orders?|products?|payments?)\b",
+        ql,
+    ):
+        return True
+    if re.search(r"\b(customers?|orders?|products?)\s+data\b", ql):
+        return True
+    return False
+
+
+def _wants_metric_breakdown(ql: str) -> bool:
+    """True when the user asks for aggregated breakdown, not a entity listing."""
+    if _contains_any(ql, ["by ", "each ", "per ", "grouped by", "breakdown", "distribution"]):
+        return True
+    return bool(
+        re.search(r"\bby\s+(month|category|customer|product|region|day|week|year|segment)\b", ql)
+    )
+
+
 def _metric_breakdown_wants_bar_chart(ql: str) -> bool:
     """
     Bar chart for comparing a numeric measure across categories / products / regions.
@@ -93,8 +133,10 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
 
     if _contains_any(ql, ["total", "count", "average", "avg", "min", "max", "sum"]):
         intents.append("direct_metric")
-    if _contains_any(ql, ["by ", "each ", "per ", "month", "category", "customer", "product", "region"]):
+    if _wants_metric_breakdown(ql):
         intents.append("breakdown")
+    if _is_list_or_table_request(ql):
+        intents.append("list_table")
     if _contains_any(ql, ["vs", "versus", "compare", "top ", "bottom ", "growth", "decline", "trend"]):
         intents.append("comparative_or_trend")
     strategic_phrases = [
@@ -242,8 +284,13 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
         ],
     ) or _metric_breakdown_wants_bar_chart(ql):
         chart_hint = "bar"
-    elif _contains_any(ql, ["distribution", "breakdown"]) or "breakdown" in intents:
+    elif ("breakdown" in intents or _contains_any(ql, ["distribution", "breakdown"])) and (
+        "list_table" not in intents
+    ):
         chart_hint = "pie"
+
+    if "list_table" in intents:
+        chart_hint = None
 
     return {
         "question": q,

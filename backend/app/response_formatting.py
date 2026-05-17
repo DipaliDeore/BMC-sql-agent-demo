@@ -118,6 +118,11 @@ def build_results_narrative(results: list[dict]) -> str | None:
                     "This breakdown helps compare performance across categories in your data."
                 )
                 return f"{header}\n" + "\n".join(lines) + f"\n\n{meaning}"
+        if len(results) > 15:
+            return (
+                f"I found {len(results)} rows that match your request. "
+                "See the table below (charts are omitted for large row listings)."
+            )
         return (
             f"I found {len(results)} rows that match your request. "
             "The table shows the detailed breakdown."
@@ -184,7 +189,7 @@ def finalize_explanation(
     response_kind: str | None = None,
 ) -> str:
     """Return one user-facing explanation without repeated scalar summaries."""
-    if response_kind in ("trend_series", "strategic_advisory"):
+    if response_kind in ("trend_series", "strategic_advisory", "image_db_grounded"):
         return (explanation or "").strip()
     narrative = build_results_narrative(results) if results else None
     if narrative and _is_single_scalar_result(results):
@@ -202,7 +207,7 @@ def result_sentence_for_display(
     response_kind: str | None = None,
 ) -> str | None:
     """Avoid repeating the scalar summary when it already appears in explanation."""
-    if response_kind in ("trend_series", "strategic_advisory"):
+    if response_kind in ("trend_series", "strategic_advisory", "image_db_grounded"):
         return None
     if results and len(results) == 1 and _is_time_series_result_row(results[0]):
         return None
@@ -230,6 +235,8 @@ def merge_explanation_with_narrative(llm_explanation: str, narrative: str | None
         "got it!",
     )
     if generic_llm or not llm:
+        return narrative_text
+    if "matching query" in llm.lower() and "retrieved" in llm.lower():
         return narrative_text
     if llm.startswith(narrative_text) or narrative_text in llm:
         return _dedupe_paragraphs(llm)

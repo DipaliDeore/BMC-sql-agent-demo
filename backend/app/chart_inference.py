@@ -7,6 +7,10 @@ from __future__ import annotations
 
 from typing import Any
 
+MAX_PIE_SLICES = 12
+MAX_BAR_CATEGORIES = 20
+MAX_LINE_POINTS = 60
+
 
 def _is_numeric_like(val: Any) -> bool:
     if isinstance(val, bool) or val is None:
@@ -34,6 +38,34 @@ def _looks_like_time_dimension(key: str, sample: Any) -> bool:
     return False
 
 
+def _is_tabular_entity_list(rows: list[dict]) -> bool:
+    """Wide entity listings (customers with email, etc.) are tables—not chart data."""
+    if not rows or len(rows) < 2 or not isinstance(rows[0], dict):
+        return False
+    keys = [str(k).lower() for k in rows[0].keys()]
+    rowish = sum(1 for k in keys if k in ("email", "phone", "first_name", "last_name", "address", "created_at", "updated_at"))
+    if rowish >= 2 and len(rows) > 10:
+        return True
+    if len(keys) >= 4 and len(rows) > 15:
+        return True
+    return False
+
+
+def _should_skip_chart(plan: dict[str, Any], rows: list[dict]) -> bool:
+    if plan.get("intents") and "list_table" in plan.get("intents", []):
+        return True
+    if _is_tabular_entity_list(rows):
+        return True
+    hint = plan.get("chart_hint")
+    if hint == "pie" and len(rows) > MAX_PIE_SLICES:
+        return True
+    if hint == "bar" and len(rows) > MAX_BAR_CATEGORIES:
+        return True
+    if hint == "line" and len(rows) > MAX_LINE_POINTS:
+        return True
+    return False
+
+
 def infer_chart_config(plan: dict[str, Any], rows: list[dict]) -> dict[str, Any] | None:
     if not plan.get("needs_chart"):
         return None
@@ -41,6 +73,8 @@ def infer_chart_config(plan: dict[str, Any], rows: list[dict]) -> dict[str, Any]
     if hint not in ("pie", "bar", "line"):
         return None
     if not rows or not isinstance(rows[0], dict):
+        return None
+    if _should_skip_chart(plan, rows):
         return None
     first = rows[0]
     keys = list(first.keys())
@@ -140,9 +174,18 @@ def infer_chart_config(plan: dict[str, Any], rows: list[dict]) -> dict[str, Any]
 
 def apply_inferred_chart_from_plan(summary: dict[str, Any], plan: dict[str, Any]) -> None:
     """Mutate ``summary`` in place when the model omitted ``render_chart``."""
-    if not plan.get("needs_chart"):
-        return
     if summary.get("status") != "success":
+        return
+
+    rows = summary.get("results") or []
+    if _should_skip_chart(plan, rows):
+        summary["chart_config"] = None
+        if summary.get("is_multi"):
+            for sub in summary.get("sub_responses") or []:
+                sub["chart_config"] = None
+        return
+
+    if not plan.get("needs_chart"):
         return
 
     if summary.get("is_multi"):

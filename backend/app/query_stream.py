@@ -332,6 +332,27 @@ def _chat_payload_from_final(final: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _vision_payload_to_http_final(vision: dict[str, Any], question: str, conversation_id: str) -> dict[str, Any]:
+    """Normalize vision pipeline output to the same shape as SQL query finals."""
+    return {
+        "question": question,
+        "conversation_id": conversation_id,
+        "sql": (vision.get("sql") or "").strip(),
+        "results": vision.get("results") or [],
+        "explanation": (vision.get("explanation") or "").strip(),
+        "row_count": int(vision.get("row_count") or len(vision.get("results") or [])),
+        "result_sentence": vision.get("result_sentence"),
+        "cache_references": vision.get("cache_references"),
+        "is_multi": bool(vision.get("is_multi")),
+        "sub_responses": vision.get("sub_responses") or [],
+        "is_ambiguous": bool(vision.get("is_ambiguous")),
+        "cache_doc_id": vision.get("cache_doc_id"),
+        "chart_config": vision.get("chart_config"),
+        "excel_download_url": vision.get("excel_download_url"),
+        "response_kind": vision.get("response_kind"),
+    }
+
+
 def _materialize_http_final(
     question: str,
     conversation_id: str,
@@ -416,17 +437,29 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
         q_vis = question.strip() or "(Image only)"
         vision_payload = await run_vision_image_pipeline(q_vis, body.images, conversation_id)
         if vision_payload is not None:
-            final = {**vision_payload, "assistant_message_id": None}
+            yield _sse_data({"type": "status", "content": "analyzing_image"})
+            base_final = _vision_payload_to_http_final(
+                vision_payload, q_vis, conversation_id
+            )
+            sql_text = (base_final.get("sql") or "").strip()
+            if sql_text:
+                yield _sse_data({"type": "status", "content": "executing_sql"})
+                for part in sql_text.split(";"):
+                    part = part.strip()
+                    if part:
+                        yield _sse_data({"type": "sql", "content": part})
+            for row_data in base_final.get("results") or []:
+                if isinstance(row_data, dict):
+                    yield _sse_data({"type": "data", "content": row_data})
             row = chat_store.add_message(
                 conversation_id,
                 "assistant",
-                _chat_assistant_content(final),
-                _chat_payload_from_final(final),
+                _chat_assistant_content(base_final),
+                _chat_payload_from_final(base_final),
             )
-            final["assistant_message_id"] = str(row["id"])
-            yield _sse_data({"type": "status", "content": "analyzing_image"})
+            base_final["assistant_message_id"] = str(row["id"])
             yield _sse_data({"type": "status", "content": "done"})
-            yield _sse_data({"type": "final", "content": final})
+            yield _sse_data({"type": "final", "content": base_final})
             return
 
     try:

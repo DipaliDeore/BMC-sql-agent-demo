@@ -12,7 +12,11 @@ import re
 from typing import Any, Protocol, runtime_checkable
 
 from app import config
-from app.database import get_database_schema
+from app.chart_inference import infer_chart_config
+from app.database import execute_query, get_database_schema, select_sql_with_row_limit
+from app.query_validator import QueryValidationError, validate_sql
+from app.response_formatting import format_single_value
+from app.serialization import make_json_serializable
 
 MAX_VISION_IMAGES = 4
 MAX_DECODED_BYTES_PER_IMAGE = 4 * 1024 * 1024
@@ -50,20 +54,39 @@ Reply with ONLY a JSON object (no markdown) in this exact shape:
 {"decision":"in_scope"|"out_of_scope"|"uncertain","reason":"short","clarifying_question":null or "one question"}"""
 
 
-_ANSWER_SYSTEM = """You are the data and SQL copilot for this app. The image passed a relevance check against the connected database schema (including reasonable semantic alignment).
+_ANSWER_SYSTEM = """You are the data and SQL copilot for this app. The image passed a relevance check, but a live database query could not be run.
 
 Rules:
-- Ground factual claims in what is visible in the image(s). If labels or numbers are unreadable, say so.
-- Do NOT claim you executed queries against the live database. Prefer **real** table/column names from the schema appendix. When chart headers use different words than SQL names (e.g. on-screen `CUSTOMER_SEGMENT`), map them to the closest appendix entities and state the mapping explicitly.
-- Example SQL should use appendix names; if the image label is a display alias, write SQL using the real column(s) you infer and note the assumption.
+- Describe only what you can clearly see. For anything unclear, cropped, or missing in the image, say explicitly that you cannot read it from the screenshot alone and that the user should retry so the app can query the database.
+- Do NOT invent counts for categories you cannot read.
+- Map visible labels to real table/column names from the schema appendix when possible.
+- Give one example SELECT the app should run (using appendix names only).
 
-Structure when helpful (short numbered sections):
-1) What the image shows (visible metrics, dimensions, counts, segments).
-2) How it relates to the connected schema — which tables/columns likely back this view, grain, and example SELECT-style questions.
-3) If SQL/ERD/errors are visible — brief comment.
-4) For action questions — tie to visible segments/trends and appendix; what query would validate.
+Keep the answer short."""
 
-Avoid unrelated domains and empty platitudes."""
+_SQL_PLAN_SYSTEM = """You analyze a chart/dashboard screenshot against a real database schema.
+
+The database is the source of truth. If any label, legend item, table row, or number is missing, cropped, blurry, or cut off in the image, your SQL must still return the COMPLETE breakdown from the database (do not filter to only what you can read in the image).
+
+Return ONLY JSON (no markdown):
+{
+  "sql": "SELECT ...",
+  "chart_hint": "pie" | "bar" | "line" | null,
+  "dimension_column": "result column for categories/labels",
+  "metric_column": "result column for counts or amounts",
+  "unclear_in_image": ["optional list of labels/metrics that were hard to read but included via SQL"]
+}
+
+Rules:
+- Exactly ONE read-only SELECT for MySQL/TiDB
+- Use ONLY tables/columns from the schema appendix
+- GROUP BY the category/dimension column and aggregate the metric (COUNT/SUM/AVG as appropriate)
+- Include every category the schema can produce (e.g. all payment_method values, all segments)—never omit a legend color because the screenshot cropped the table
+- ORDER BY the metric descending when useful
+- LIMIT 100
+"""
+
+_IMAGE_DB_RESPONSE_KIND = "image_db_grounded"
 
 
 def _truncate_schema(text: str, max_chars: int) -> str:
@@ -150,7 +173,7 @@ def _vision_message_content(
         blocks.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "auto"},
+                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
             }
         )
     return blocks
@@ -217,6 +240,301 @@ def _answer_sync(
         max_tokens=2500,
     )
     return (resp.choices[0].message.content or "").strip()
+
+
+def _plan_sql_for_image_sync(
+    user_text: str,
+    parts: list[tuple[str, str]],
+    schema_context: str,
+) -> dict[str, Any]:
+    client = _openai_client()
+    if client is None:
+        return {}
+    model = (config.OPENAI_VISION_MODEL or "gpt-4o-mini").strip()
+    user_content = _vision_message_content(
+        user_text,
+        parts,
+        "Plan one SQL query that loads the FULL data behind this chart from the database. "
+        "If any legend item, row, or value is unclear or cut off in the image, the query must still return all categories from the DB.",
+        schema_context=schema_context,
+        schema_prefix=_GATE_SCHEMA_PREFIX,
+    )
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": _SQL_PLAN_SYSTEM},
+            {"role": "user", "content": user_content},
+        ],
+        response_format={"type": "json_object"},
+        max_tokens=800,
+    )
+    return _extract_json_object((resp.choices[0].message.content or "").strip())
+
+
+def _schema_fallback_sql_candidates(schema_text: str, user_text: str) -> list[str]:
+    """Heuristic SELECTs to try when vision-planned SQL fails—fills gaps from the DB."""
+    schema_l = (schema_text or "").lower()
+    ql = (user_text or "").lower()
+    out: list[str] = []
+
+    def add(sql: str) -> None:
+        s = sql.strip().rstrip(";")
+        if s and s not in out:
+            out.append(s)
+
+    chartish = any(
+        w in ql
+        for w in (
+            "chart",
+            "explain",
+            "image",
+            "screenshot",
+            "dashboard",
+            "breakdown",
+            "distribution",
+            "pie",
+            "graph",
+        )
+    ) or not ql.strip()
+
+    if "payments" in schema_l and "payment_method" in schema_l:
+        if chartish or any(w in ql for w in ("payment", "card", "upi", "cod", "transaction", "refund")):
+            add(
+                "SELECT payment_method, COUNT(payment_id) AS number_of_transactions "
+                "FROM payments GROUP BY payment_method "
+                "ORDER BY number_of_transactions DESC"
+            )
+
+    if "returns" in schema_l and "refunds" in schema_l:
+        if chartish or any(w in ql for w in ("return", "refund")):
+            if "refund_amount" in schema_l:
+                add(
+                    "SELECT DATE_FORMAT(r.return_date, '%Y-%m') AS period, "
+                    "SUM(rf.refund_amount) AS total_refund_amount "
+                    "FROM returns r JOIN refunds rf ON r.return_id = rf.return_id "
+                    "GROUP BY period ORDER BY period ASC"
+                )
+
+    if "customers" in schema_l:
+        if chartish or "customer" in ql or "segment" in ql:
+            if "segment" in schema_l:
+                add(
+                    "SELECT segment, COUNT(customer_id) AS number_of_customers "
+                    "FROM customers GROUP BY segment ORDER BY number_of_customers DESC"
+                )
+            add(
+                "SELECT COUNT(customer_id) AS number_of_customers FROM customers"
+            )
+
+    if "orders" in schema_l and chartish:
+        if "order_status" in schema_l:
+            add(
+                "SELECT order_status, COUNT(order_id) AS number_of_orders "
+                "FROM orders GROUP BY order_status ORDER BY number_of_orders DESC"
+            )
+        if "order_date" in schema_l:
+            add(
+                "SELECT DATE_FORMAT(order_date, '%Y-%m') AS order_month, "
+                "COUNT(order_id) AS number_of_orders "
+                "FROM orders GROUP BY order_month ORDER BY order_month ASC"
+            )
+
+    if "products" in schema_l and (chartish or "product" in ql):
+        add(
+            "SELECT category, COUNT(product_id) AS number_of_products "
+            "FROM products GROUP BY category ORDER BY number_of_products DESC"
+        )
+
+    return out[:6]
+
+
+def _execute_planned_sql(sql: str) -> tuple[str, list[dict], str | None]:
+    try:
+        validated = validate_sql(sql.strip().rstrip(";"))
+    except QueryValidationError as e:
+        return "", [], str(e)
+
+    res = execute_query(validated)
+    if isinstance(res, dict) and "error" in res:
+        return "", [], str(res["error"])
+
+    rows = make_json_serializable(res if isinstance(res, list) else [res])
+    if not isinstance(rows, list):
+        rows = [rows]
+    limited = select_sql_with_row_limit(validated)
+    return limited, rows, None
+
+
+def _pick_dimension_and_metric(
+    rows: list[dict],
+    dim_hint: str | None,
+    metric_hint: str | None,
+) -> tuple[str | None, str | None]:
+    if not rows or not isinstance(rows[0], dict):
+        return None, None
+    keys = list(rows[0].keys())
+    if not keys:
+        return None, None
+
+    dim_key = dim_hint if dim_hint in keys else None
+    metric_key = metric_hint if metric_hint in keys else None
+
+    if not dim_key or not metric_key:
+        numeric = [k for k in keys if _is_numeric_val(rows[0].get(k))]
+        non_numeric = [k for k in keys if k not in numeric]
+        if not dim_key and non_numeric:
+            dim_key = non_numeric[0]
+        if not metric_key and numeric:
+            metric_key = numeric[-1]
+
+    return dim_key, metric_key
+
+
+def _is_numeric_val(val: Any) -> bool:
+    if isinstance(val, bool) or val is None:
+        return False
+    if isinstance(val, (int, float)):
+        return True
+    try:
+        float(val)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _build_db_grounded_explanation(
+    question: str,
+    rows: list[dict],
+    dim_key: str,
+    metric_key: str,
+    unclear_in_image: list[str] | None = None,
+) -> str:
+    lines = [
+        "I queried your connected database to answer this chart. "
+        "Anything that was unclear, cropped, or missing in the image is filled in from live data below.",
+        "",
+    ]
+    if unclear_in_image:
+        gaps = [str(x).strip() for x in unclear_in_image if str(x).strip()]
+        if gaps:
+            lines.append(
+                "Hard to read in the screenshot (resolved from DB): "
+                + ", ".join(gaps[:8])
+                + ("…" if len(gaps) > 8 else "")
+                + "."
+            )
+            lines.append("")
+    total_metric = 0.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = format_single_value(row.get(dim_key))
+        val = row.get(metric_key)
+        try:
+            total_metric += float(val or 0)
+        except (TypeError, ValueError):
+            pass
+        lines.append(
+            f"- {label}: {format_single_value(val)} "
+            f"({metric_key.replace('_', ' ')})"
+        )
+
+    if rows:
+        lines.append("")
+        lines.append(
+            f"Total across {len(rows)} categories: {format_single_value(total_metric)} "
+            f"{metric_key.replace('_', ' ')}."
+        )
+        lines.append("")
+        lines.append(
+            "The table and chart below come from this query and include every category in the database."
+        )
+    return "\n".join(lines).strip()
+
+
+def _sql_candidates_for_image(
+    question: str,
+    parts: list[tuple[str, str]],
+    schema_text: str,
+) -> list[tuple[dict[str, Any], str]]:
+    """Ordered (plan_meta, sql) pairs to execute—vision plan first, then schema fallbacks."""
+    plan = _plan_sql_for_image_sync(question, parts, schema_text)
+    candidates: list[tuple[dict[str, Any], str]] = []
+
+    primary = (plan.get("sql") or "").strip().rstrip(";")
+    if primary:
+        candidates.append((plan, primary))
+
+    for sql in _schema_fallback_sql_candidates(schema_text, question):
+        if not any(sql == existing for _, existing in candidates):
+            candidates.append((plan, sql))
+
+    return candidates
+
+
+def _try_db_grounded_image_answer(
+    question: str,
+    parts: list[tuple[str, str]],
+    schema_text: str,
+) -> dict[str, Any] | None:
+    last_err: str | None = None
+    for plan, sql in _sql_candidates_for_image(question, parts, schema_text):
+        limited_sql, rows, err = _execute_planned_sql(sql)
+        if err:
+            last_err = err
+            continue
+        if not rows:
+            last_err = "no rows"
+            continue
+
+        dim_key, metric_key = _pick_dimension_and_metric(
+            rows,
+            plan.get("dimension_column"),
+            plan.get("metric_column"),
+        )
+        if not dim_key or not metric_key:
+            last_err = "could not infer columns"
+            continue
+
+        chart_hint = (plan.get("chart_hint") or "pie").strip().lower()
+        if chart_hint not in ("pie", "bar", "line"):
+            chart_hint = "pie" if len(rows) <= 8 else "bar"
+
+        chart_plan = {"needs_chart": True, "chart_hint": chart_hint}
+        chart_config = infer_chart_config(chart_plan, rows)
+
+        unclear = plan.get("unclear_in_image")
+        if not isinstance(unclear, list):
+            unclear = None
+
+        explanation = _build_db_grounded_explanation(
+            question,
+            rows,
+            dim_key,
+            metric_key,
+            unclear_in_image=unclear,
+        )
+
+        return {
+            "question": question,
+            "sql": limited_sql,
+            "results": rows,
+            "explanation": explanation,
+            "row_count": len(rows),
+            "result_sentence": None,
+            "cache_references": None,
+            "conversation_id": "",
+            "is_ambiguous": False,
+            "is_multi": False,
+            "sub_responses": [],
+            "cache_doc_id": None,
+            "chart_config": chart_config,
+            "excel_download_url": None,
+            "response_kind": _IMAGE_DB_RESPONSE_KIND,
+        }
+
+    print(f"[vision_gate] DB grounding failed after all candidates: {last_err}")
+    return None
 
 
 OUT_OF_SCOPE_MESSAGE = (
@@ -353,6 +671,16 @@ async def run_vision_image_pipeline(
             "chart_config": None,
             "excel_download_url": None,
         }
+
+    grounded = await asyncio.to_thread(
+        _try_db_grounded_image_answer,
+        question,
+        parts,
+        schema_text,
+    )
+    if grounded is not None:
+        grounded["conversation_id"] = conversation_id
+        return grounded
 
     answer = await asyncio.to_thread(
         _answer_sync,
