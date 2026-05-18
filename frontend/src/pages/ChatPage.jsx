@@ -114,7 +114,10 @@ export default function ChatPage({ theme, toggleTheme }) {
       const existing = prev[chatId] || [];
       const streamingOnly = existing.filter((m) => m?.streaming);
       if (streamingOnly.length > 0) {
-        return { ...prev, [chatId]: [...raw.map(fromApiMessage), ...streamingOnly] };
+        return {
+          ...prev,
+          [chatId]: [...raw.map(fromApiMessage), ...streamingOnly],
+        };
       }
       return { ...prev, [chatId]: raw.map(fromApiMessage) };
     });
@@ -158,7 +161,10 @@ export default function ChatPage({ theme, toggleTheme }) {
 
       const imagePayload =
         snapshot.length > 0
-          ? snapshot.map(({ media_type, data_base64 }) => ({ media_type, data_base64 }))
+          ? snapshot.map(({ media_type, data_base64 }) => ({
+              media_type,
+              data_base64,
+            }))
           : null;
 
       await streamQuery(
@@ -222,7 +228,8 @@ export default function ChatPage({ theme, toggleTheme }) {
                     is_multi: d.is_multi ?? false,
                     sub_responses: d.sub_responses ?? [],
                     is_ambiguous: d.is_ambiguous ?? false,
-                    original_question: qText || (snapshot.length ? "(Image only)" : question),
+                    original_question:
+                      qText || (snapshot.length ? "(Image only)" : question),
                     cache_doc_id: d.cache_doc_id ?? null,
                     chart_config: d.chart_config ?? null,
                     excel_download_url: d.excel_download_url ?? null,
