@@ -6,16 +6,23 @@
 
 import axios from "axios";
 
-const API_BASE_URL = "http://localhost:8000";
+export const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 const DEFAULT_ERROR_MESSAGE =
   "Hmm, something went wrong. Could you try again in a moment?";
 
 export function getApiErrorMessage(error) {
+  if (error?.name === "AbortError") {
+    return "Request cancelled.";
+  }
   if (!error?.response?.data) {
-    return error?.message?.includes("Network Error")
-      ? "I can't reach the server right now — is the backend running?"
-      : DEFAULT_ERROR_MESSAGE;
+    const msg = error?.message || "";
+    if (msg.includes("Network Error")) {
+      return "I can't reach the server right now — is the backend running?";
+    }
+    if (msg.trim()) return msg;
+    return DEFAULT_ERROR_MESSAGE;
   }
   const d = error.response.data.detail;
   if (typeof d === "string" && d.trim()) return d;
@@ -76,13 +83,7 @@ export async function deleteChat(chatId) {
 /**
  * POST /api/query/stream — SSE over fetch + ReadableStream (do not use axios).
  *
- * @param {string} question
- * @param {string} [conversationId]
- * @param {string} [preference]
- * @param {Array<{role:string,content:string}>|null} [messages]
- * @param {{ onEvent?: (e: { type: string, content: unknown }) => void }} [handlers]
- * @param {Array<{ media_type: string, data_base64: string }>|null} [images] — OpenAI vision (max 4)
- * @returns {Promise<void>}
+ * @param {AbortSignal} [signal] — abort to cancel in-flight stream (Stop / unmount)
  */
 export async function streamQuery(
   question,
@@ -91,6 +92,7 @@ export async function streamQuery(
   messages = null,
   handlers = {},
   images = null,
+  signal = undefined,
 ) {
   const { onEvent } = handlers;
   const body = { question, preference: preference || "AUTO" };
@@ -110,6 +112,7 @@ export async function streamQuery(
       Accept: "text/event-stream",
     },
     body: JSON.stringify(body),
+    signal,
   });
 
   if (!res.ok) {
@@ -131,43 +134,47 @@ export async function streamQuery(
   const decoder = new TextDecoder();
   let carry = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    carry += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      if (signal?.aborted) {
+        await reader.cancel();
+        throw new DOMException("Aborted", "AbortError");
+      }
 
-    const blocks = carry.split("\n\n");
-    carry = blocks.pop() ?? "";
+      const { done, value } = await reader.read();
+      if (done) break;
+      carry += decoder.decode(value, { stream: true });
 
-    for (const block of blocks) {
-      const lines = block.split("\n");
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const jsonStr = trimmed.slice(5).trim();
-        if (!jsonStr) continue;
-        let evt;
-        try {
-          evt = JSON.parse(jsonStr);
-        } catch {
-          continue;
+      const blocks = carry.split("\n\n");
+      carry = blocks.pop() ?? "";
+
+      for (const block of blocks) {
+        const lines = block.split("\n");
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const jsonStr = trimmed.slice(5).trim();
+          if (!jsonStr) continue;
+          let evt;
+          try {
+            evt = JSON.parse(jsonStr);
+          } catch {
+            continue;
+          }
+          if (onEvent && evt?.type) onEvent(evt);
         }
-        if (onEvent && evt?.type) onEvent(evt);
       }
     }
+  } catch (err) {
+    try {
+      await reader.cancel();
+    } catch {
+      /* ignore */
+    }
+    throw err;
   }
 }
 
-/**
- * POST /feedback — thumbs up stores (query, sql) in semantic cache; down/none logs only.
- *
- * @param {string} query
- * @param {string} response
- * @param {"up"|"down"|"none"} feedback
- * @param {{ sql?: string }} [options] — executed SQL for thumbs-up indexing (and optional log context)
- * @returns {Promise<{ status: "stored_in_vector_db" | "logged" }>}
- */
-// Helper to get session ID (can be improved to use real session logic)
 function getSessionId() {
   let sid = window.localStorage.getItem("session_id");
   if (!sid) {
@@ -177,7 +184,6 @@ function getSessionId() {
   return sid;
 }
 
-// feedback can be: "up" or "down" only
 export async function submitFeedback(
   query,
   response,
@@ -190,7 +196,7 @@ export async function submitFeedback(
   const payload = {
     query,
     response,
-    feedback, // "up" | "down"
+    feedback,
     sql,
     session_id: getSessionId(),
   };

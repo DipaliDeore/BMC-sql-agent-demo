@@ -69,7 +69,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Create **`backend/.env`** (see [Environment variables](#environment-variables)). Then:
+Copy **`backend/.env.example`** to **`backend/.env`** and fill in your keys (see [Environment variables](#environment-variables)). Then:
 
 ```bash
 uvicorn app.main:app --reload

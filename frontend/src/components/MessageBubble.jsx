@@ -3,6 +3,7 @@
  */
 
 import React from "react";
+import { API_BASE_URL } from "../api/agent";
 import ResultTable from "./ResultTable";
 import SqlViewer from "./SqlViewer";
 import MessageFeedback from "./MessageFeedback";
@@ -37,7 +38,12 @@ function SqlStatements({ sql, theme }) {
   );
 }
 
-export default function MessageBubble({ message, theme, pairedUserQuery = "" }) {
+export default function MessageBubble({
+  message,
+  theme,
+  pairedUserQuery = "",
+  onRetry,
+}) {
   const feedbackQuery = (pairedUserQuery || message.original_question || "").trim();
   const isUser = message.role === "user";
   const canShowInlineResults = !message.row_count || message.row_count <= 100;
@@ -117,6 +123,17 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
             {message.errorText ||
               "Hmm, I didn't quite get that. Could you try again or rephrase?"}
           </div>
+          {onRetry && feedbackQuery ? (
+            <div className="error-msg-actions">
+              <button
+                type="button"
+                className="ui-btn-secondary error-retry-btn"
+                onClick={() => onRetry(feedbackQuery)}
+              >
+                Retry
+              </button>
+            </div>
+          ) : null}
           <MessageFeedback pairedUserQuery={feedbackQuery} message={message} />
         </div>
       </div>
@@ -234,7 +251,7 @@ export default function MessageBubble({ message, theme, pairedUserQuery = "" }) 
             )}
 
             <a
-              href={`http://localhost:8000${message.excel_download_url}`}
+              href={`${API_BASE_URL}${message.excel_download_url}`}
               download
               style={{
                 display: "inline-flex",

@@ -57,6 +57,8 @@ export default function ChatWindow({
   messages,
   loading,
   onSend,
+  onStop,
+  onRetry,
   inputValue,
   setInputValue,
   pendingImages = [],
@@ -170,6 +172,7 @@ export default function ChatWindow({
                 message={msg}
                 theme={theme}
                 pairedUserQuery={pairedUserQueryForIndex(messages, index)}
+                onRetry={onRetry}
               />
             ))}
           </div>
@@ -238,26 +241,37 @@ export default function ChatWindow({
               aria-label="Message"
             />
 
-            <button
-              type="submit"
-              className="chat-send-btn"
-              disabled={loading || (!inputValue.trim() && !pendingImages.length)}
-              aria-label="Send message"
-            >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
+            {loading ? (
+              <button
+                type="button"
+                className="chat-stop-btn"
+                onClick={() => onStop?.()}
+                aria-label="Stop generating"
               >
-                <path d="m5 12 7-7 7 7M12 19V5" />
-              </svg>
-            </button>
+                Stop
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="chat-send-btn"
+                disabled={!inputValue.trim() && !pendingImages.length}
+                aria-label="Send message"
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="m5 12 7-7 7 7M12 19V5" />
+                </svg>
+              </button>
+            )}
           </div>
         </form>
       </div>

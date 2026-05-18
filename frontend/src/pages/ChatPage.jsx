@@ -2,10 +2,10 @@
  * ChatPage.jsx — ChatGPT-style sessions backed by API + Postgres
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { submitFeedback } from "../api/agent";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
+import ErrorBoundary from "../components/ErrorBoundary";
 import {
   streamQuery,
   getApiErrorMessage,
@@ -83,6 +83,9 @@ export default function ChatPage({ theme, toggleTheme }) {
   const [inputValue, setInputValue] = useState("");
   const [pendingImages, setPendingImages] = useState([]);
   const [initError, setInitError] = useState(null);
+  const [boundaryKey, setBoundaryKey] = useState(0);
+
+  const streamAbortRef = useRef(null);
 
   const activeMessages = useMemo(
     () => (activeChatId ? messagesByChat[activeChatId] || [] : []),
@@ -100,6 +103,13 @@ export default function ChatPage({ theme, toggleTheme }) {
 
   const setChatLoading = useCallback((chatId, value) => {
     setLoadingByChat((prev) => ({ ...prev, [chatId]: value }));
+  }, []);
+
+  const abortActiveStream = useCallback(() => {
+    if (streamAbortRef.current) {
+      streamAbortRef.current.abort();
+      streamAbortRef.current = null;
+    }
   }, []);
 
   const refreshChats = useCallback(async () => {
@@ -123,160 +133,209 @@ export default function ChatPage({ theme, toggleTheme }) {
     });
   }, []);
 
-  // ✅ FIXED handleSend
-  async function handleSend(question) {
-    if (!activeChatId) return;
-    const chatId = activeChatId;
+  const runStream = useCallback(
+    async (chatId, question, { skipUserMessage = false, imageSnapshot = null } = {}) => {
+      const snapshot = imageSnapshot ?? [...pendingImages];
+      const qText = question.trim();
+      const userMessage = {
+        id: `local-u-${Date.now()}`,
+        role: "user",
+        content: qText || (snapshot.length ? "(Image)" : ""),
+        attachmentPreviews: snapshot.map((p) => p.preview),
+      };
 
-    const snapshot = [...pendingImages];
-    const qText = question.trim();
-    const userMessage = {
-      id: `local-u-${Date.now()}`,
-      role: "user",
-      content: qText || (snapshot.length ? "(Image)" : ""),
-      attachmentPreviews: snapshot.map((p) => p.preview),
-    };
+      const assistantId = `local-a-${chatId}-${Date.now()}`;
+      const streamingPlaceholder = {
+        id: assistantId,
+        role: "assistant",
+        streaming: true,
+        streamText: "",
+        streamStatus: "Thinking…",
+        streamSql: "",
+        streamRows: [],
+        original_question: qText || (snapshot.length ? "(Image only)" : question),
+      };
 
-    const assistantId = `local-a-${chatId}-${Date.now()}`;
+      const currentMessages = messagesByChat[chatId] || [];
+      const baseMessages = skipUserMessage
+        ? currentMessages.filter((m) => !(m.role === "assistant" && m.error))
+        : [...currentMessages, userMessage];
 
-    const streamingPlaceholder = {
-      id: assistantId,
-      role: "assistant",
-      streaming: true,
-      streamText: "",
-      streamStatus: "Thinking…",
-      streamSql: "",
-      streamRows: [],
-      original_question: qText || (snapshot.length ? "(Image only)" : question),
-    };
+      setChatMessages(chatId, [...baseMessages, streamingPlaceholder]);
+      setChatLoading(chatId, true);
 
-    const currentMessages = messagesByChat[chatId] || [];
-    const nextMessages = [...currentMessages, userMessage];
+      abortActiveStream();
+      const controller = new AbortController();
+      streamAbortRef.current = controller;
 
-    setChatMessages(chatId, [...nextMessages, streamingPlaceholder]);
-    setChatLoading(chatId, true);
+      try {
+        const forApi = mapMessagesForApi(
+          skipUserMessage ? baseMessages : [...currentMessages, userMessage],
+        );
 
-    try {
-      const forApi = mapMessagesForApi(nextMessages);
+        const imagePayload =
+          snapshot.length > 0
+            ? snapshot.map(({ media_type, data_base64 }) => ({
+                media_type,
+                data_base64,
+              }))
+            : null;
 
-      const imagePayload =
-        snapshot.length > 0
-          ? snapshot.map(({ media_type, data_base64 }) => ({
-              media_type,
-              data_base64,
-            }))
-          : null;
+        await streamQuery(
+          qText || (snapshot.length ? "(Image only)" : question),
+          chatId,
+          "AUTO",
+          forApi,
+          {
+            onEvent: (evt) => {
+              setChatMessages(chatId, (prev) =>
+                prev.map((m) => {
+                  if (m.id !== assistantId) return m;
 
-      await streamQuery(
-        qText || (snapshot.length ? "(Image only)" : question),
-        chatId,
-        "AUTO",
-        forApi,
-        {
-          onEvent: (evt) => {
-            setChatMessages(chatId, (prev) =>
-              prev.map((m) => {
-                if (m.id !== assistantId) return m;
+                  if (evt.type === "status") {
+                    const labels = {
+                      thinking: "Thinking…",
+                      generating_sql: "Generating SQL…",
+                      executing_sql: "Executing query…",
+                      done: "Wrapping up…",
+                      analyzing_image: "Analyzing image…",
+                    };
+                    return {
+                      ...m,
+                      streamStatus: labels[evt.content] || evt.content,
+                    };
+                  }
 
-                if (evt.type === "status") {
-                  const labels = {
-                    thinking: "Thinking…",
-                    generating_sql: "Generating SQL…",
-                    executing_sql: "Executing query…",
-                    done: "Wrapping up…",
-                    analyzing_image: "Analyzing image…",
-                  };
-                  return {
-                    ...m,
-                    streamStatus: labels[evt.content] || evt.content,
-                  };
-                }
+                  if (evt.type === "token") {
+                    return {
+                      ...m,
+                      streamText: (m.streamText || "") + evt.content,
+                    };
+                  }
 
-                if (evt.type === "token") {
-                  return {
-                    ...m,
-                    streamText: (m.streamText || "") + evt.content,
-                  };
-                }
+                  if (evt.type === "sql") {
+                    return { ...m, streamSql: evt.content };
+                  }
 
-                if (evt.type === "sql") {
-                  return { ...m, streamSql: evt.content };
-                }
+                  if (evt.type === "data") {
+                    return {
+                      ...m,
+                      streamRows: [...(m.streamRows || []), evt.content],
+                    };
+                  }
 
-                if (evt.type === "data") {
-                  return {
-                    ...m,
-                    streamRows: [...(m.streamRows || []), evt.content],
-                  };
-                }
+                  if (evt.type === "final") {
+                    const d = evt.content || {};
+                    const sid = d.assistant_message_id ?? null;
+                    return {
+                      id: sid ? `db-${sid}` : assistantId,
+                      serverMessageId: sid,
+                      role: "assistant",
+                      streaming: false,
+                      content: d.explanation ?? "",
+                      sql: d.sql ?? "",
+                      results: d.results ?? [],
+                      explanation: d.explanation ?? "",
+                      row_count: d.row_count ?? 0,
+                      result_sentence: d.result_sentence ?? null,
+                      cache_references: d.cache_references ?? null,
+                      is_multi: d.is_multi ?? false,
+                      sub_responses: d.sub_responses ?? [],
+                      is_ambiguous: d.is_ambiguous ?? false,
+                      original_question:
+                        qText || (snapshot.length ? "(Image only)" : question),
+                      cache_doc_id: d.cache_doc_id ?? null,
+                      chart_config: d.chart_config ?? null,
+                      excel_download_url: d.excel_download_url ?? null,
+                      response_kind: d.response_kind ?? null,
+                    };
+                  }
 
-                if (evt.type === "final") {
-                  const d = evt.content || {};
-                  const sid = d.assistant_message_id ?? null;
-                  return {
-                    id: sid ? `db-${sid}` : assistantId,
-                    serverMessageId: sid,
-                    role: "assistant",
-                    streaming: false,
-                    content: d.explanation ?? "",
-                    sql: d.sql ?? "",
-                    results: d.results ?? [],
-                    explanation: d.explanation ?? "",
-                    row_count: d.row_count ?? 0,
-                    result_sentence: d.result_sentence ?? null,
-                    cache_references: d.cache_references ?? null,
-                    is_multi: d.is_multi ?? false,
-                    sub_responses: d.sub_responses ?? [],
-                    is_ambiguous: d.is_ambiguous ?? false,
-                    original_question:
-                      qText || (snapshot.length ? "(Image only)" : question),
-                    cache_doc_id: d.cache_doc_id ?? null,
-                    chart_config: d.chart_config ?? null,
-                    excel_download_url: d.excel_download_url ?? null,
-                    response_kind: d.response_kind ?? null,
-                  };
-                }
+                  if (evt.type === "error") {
+                    return {
+                      id: assistantId,
+                      role: "assistant",
+                      error: true,
+                      errorText: evt.content || "Something went wrong",
+                      original_question:
+                        qText || (snapshot.length ? "(Image only)" : question),
+                    };
+                  }
 
-                if (evt.type === "error") {
-                  return {
+                  return m;
+                }),
+              );
+            },
+          },
+          imagePayload,
+          controller.signal,
+        );
+
+        if (!skipUserMessage) setPendingImages([]);
+        await refreshChats();
+        await loadMessages(chatId);
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          setChatMessages(chatId, (prev) =>
+            prev.filter((m) => m.id !== assistantId),
+          );
+        } else {
+          setChatMessages(chatId, (prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
                     id: assistantId,
                     role: "assistant",
                     error: true,
-                    errorText: evt.content || "Something went wrong",
-                  };
-                }
+                    errorText: getApiErrorMessage(error),
+                    original_question:
+                      qText || (snapshot.length ? "(Image only)" : question),
+                  }
+                : m,
+            ),
+          );
+        }
+      } finally {
+        if (streamAbortRef.current === controller) {
+          streamAbortRef.current = null;
+        }
+        setChatLoading(chatId, false);
+      }
+    },
+    [
+      pendingImages,
+      messagesByChat,
+      setChatMessages,
+      setChatLoading,
+      abortActiveStream,
+      refreshChats,
+      loadMessages,
+    ],
+  );
 
-                return m;
-              }),
-            );
-          },
-        },
-        imagePayload,
-      );
+  const handleSend = useCallback(
+    (question) => {
+      if (!activeChatId) return;
+      runStream(activeChatId, question);
+    },
+    [activeChatId, runStream],
+  );
 
-      setPendingImages([]);
-      await refreshChats();
-      await loadMessages(chatId);
-    } catch (error) {
-      setChatMessages(chatId, (prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                id: assistantId,
-                role: "assistant",
-                error: true,
-                errorText: getApiErrorMessage(error),
-              }
-            : m,
-        ),
-      );
-    } finally {
-      setChatLoading(chatId, false);
-    }
-  }
+  const handleStop = useCallback(() => {
+    abortActiveStream();
+    if (activeChatId) setChatLoading(activeChatId, false);
+  }, [abortActiveStream, activeChatId, setChatLoading]);
 
-  // ✅ Sidebar Handlers
+  const handleRetry = useCallback(
+    (question) => {
+      if (!activeChatId || !question?.trim()) return;
+      runStream(activeChatId, question, { skipUserMessage: true });
+    },
+    [activeChatId, runStream],
+  );
+
   const handleNewChat = async () => {
+    abortActiveStream();
     const c = await createChat();
     setChats((prev) => [c, ...prev]);
     setActiveChatId(c.id);
@@ -285,6 +344,7 @@ export default function ChatPage({ theme, toggleTheme }) {
   };
 
   const handleSelectChat = async (id) => {
+    if (id !== activeChatId) abortActiveStream();
     setActiveChatId(id);
     await loadMessages(id);
   };
@@ -295,6 +355,7 @@ export default function ChatPage({ theme, toggleTheme }) {
   };
 
   const handleDeleteChat = async (id) => {
+    if (id === activeChatId) abortActiveStream();
     await deleteChat(id);
     const list = await refreshChats();
     if (list.length > 0) {
@@ -306,7 +367,6 @@ export default function ChatPage({ theme, toggleTheme }) {
     }
   };
 
-  // ✅ INITIAL LOAD
   useEffect(() => {
     (async () => {
       try {
@@ -324,14 +384,20 @@ export default function ChatPage({ theme, toggleTheme }) {
         setInitError(getApiErrorMessage(err));
       }
     })();
-  }, []);
+  }, [loadMessages]);
+
+  useEffect(() => {
+    return () => abortActiveStream();
+  }, [abortActiveStream]);
 
   if (initError && !activeChatId) {
     return (
       <div className="app-shell" style={{ padding: 24 }}>
         <p>Could not load chats</p>
         <p>{initError}</p>
-        <button onClick={() => window.location.reload()}>Retry</button>
+        <button type="button" className="ui-btn-primary" onClick={() => window.location.reload()}>
+          Retry
+        </button>
       </div>
     );
   }
@@ -349,17 +415,21 @@ export default function ChatPage({ theme, toggleTheme }) {
         onDeleteChat={handleDeleteChat}
       />
 
-      <ChatWindow
-        theme={theme}
-        toggleTheme={toggleTheme}
-        messages={activeMessages}
-        loading={activeLoading}
-        onSend={handleSend}
-        inputValue={inputValue}
-        setInputValue={setInputValue}
-        pendingImages={pendingImages}
-        onPendingImagesChange={setPendingImages}
-      />
+      <ErrorBoundary key={boundaryKey} onReset={() => setBoundaryKey((k) => k + 1)}>
+        <ChatWindow
+          theme={theme}
+          toggleTheme={toggleTheme}
+          messages={activeMessages}
+          loading={activeLoading}
+          onSend={handleSend}
+          onStop={handleStop}
+          onRetry={handleRetry}
+          inputValue={inputValue}
+          setInputValue={setInputValue}
+          pendingImages={pendingImages}
+          onPendingImagesChange={setPendingImages}
+        />
+      </ErrorBoundary>
     </div>
   );
 }
