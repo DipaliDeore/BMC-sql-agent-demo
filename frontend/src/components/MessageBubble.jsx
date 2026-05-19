@@ -296,9 +296,15 @@ export default function MessageBubble({
           </div>
         )}
 
-        {message.sql && (
+        {/* {message.sql && (
           <div className={isAdvisory ? "advisory-sql-section" : ""} style={{ marginTop: isAdvisory ? "16px" : "8px" }}>
             {isAdvisory ? <p className="sql-section-label">Queries used</p> : null}
+            <SqlStatements sql={message.sql} theme={theme} />
+          </div>
+        )} */}
+
+        {message.sql && !isAdvisory && (
+          <div style={{ marginTop: "8px" }}>
             <SqlStatements sql={message.sql} theme={theme} />
           </div>
         )}
