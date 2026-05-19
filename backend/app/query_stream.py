@@ -36,6 +36,7 @@ from app.agent_executor import (
     apply_strategic_response_shape,
     generate_and_execute_with_tools,
 )
+from app.conversation_context import build_context_for_agent
 from app.database import execute_query, get_database_schema, select_sql_with_row_limit
 from app.memory.pipeline import maybe_refresh_thread_memory_after_turn
 from app.question_planner import build_question_plan
@@ -133,12 +134,14 @@ async def _stream_react_agent(
 ) -> AsyncIterator[dict[str, Any]]:
     app = _get_agent_app()
     references_text = _build_references_text(references or [])
+    conversation_context = build_context_for_agent(thread_id, current_question=question)
     runnable_cfg: dict[str, Any] = {
         "configurable": {
             "thread_id": thread_id,
             "schema": schema,
             "references_text": references_text,
             "plan_json": plan_json or "{}",
+            "conversation_context": conversation_context,
         },
         "recursion_limit": cfg_recursion,
     }

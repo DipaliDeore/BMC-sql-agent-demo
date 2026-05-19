@@ -18,6 +18,7 @@ An **AI-powered SQL agent** that answers questions in plain English: it plans SQ
 - **Similar past queries** (OpenSearch k-NN) when cache stack is enabled
 - **Image attachments** in chat: vision pipeline (OpenAI) with configurable limits (`CHAT_IMAGE_*`)
 - **Hybrid conversation memory** (optional): rolling summary + structured memory in Postgres—see [docs/MEMORY.md](docs/MEMORY.md)
+- **Follow-up context**: prior turns (including vision/chart replies from `chat_store`) are injected into the agent so questions like “explain the chart above” use saved SQL, results, and `chart_config`
 - **LangGraph checkpoints** + chat schema on **PostgreSQL** when `POSTGRES_URI` is set; otherwise in-memory
 
 ---

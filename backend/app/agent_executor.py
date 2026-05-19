@@ -33,6 +33,7 @@ from app.memory.pipeline import (
     maybe_refresh_thread_memory_after_turn,
 )
 from app.chart_inference import apply_inferred_chart_from_plan
+from app.conversation_context import build_context_for_agent
 
 
 AVAILABLE_TOOLS = [run_sql_query, render_chart]
@@ -60,6 +61,7 @@ def _prepend_system(state: dict, config: RunnableConfig) -> list:
     conf = config.get("configurable") or {}
     schema = conf.get("schema") or ""
     references_text = conf.get("references_text") or "No similar past queries available."
+    conversation_context = (conf.get("conversation_context") or "").strip()
     plan_json = conf.get("plan_json") or "{}"
     tid = (conf.get("thread_id") or "").strip()
     memory_block = build_memory_preamble_for_system(tid)
@@ -129,6 +131,17 @@ Database Schema:
 
 References:
 {references_text}
+"""
+    if conversation_context:
+        system_content += f"""
+
+PRIOR CONVERSATION (from server chat history — authoritative for follow-ups):
+{conversation_context}
+
+Follow-up rules:
+- If the user refers to "the chart above", "that graph", "those numbers", or earlier SQL/results, answer using PRIOR CONVERSATION. A chart may already be visible in the UI even if you did not call render_chart in this turn.
+- Do not claim that no chart or no data was shown when PRIOR CONVERSATION documents SQL, results, or chart_config.
+- Answer in plain text without new SQL/tools unless the user asks for new or updated data.
 """
     raw = state.get("messages") or []
     msgs = apply_hybrid_message_view(raw, config)
@@ -569,6 +582,7 @@ def generate_and_execute_with_tools(
             return strategic_result
 
     tid = (thread_id or "").strip() or str(uuid.uuid4())
+    conversation_context = build_context_for_agent(tid, current_question=question)
     app = _get_agent_app()
     cfg: RunnableConfig = {
         "configurable": {
@@ -576,6 +590,7 @@ def generate_and_execute_with_tools(
             "schema": schema,
             "references_text": references_text,
             "plan_json": json.dumps(plan),
+            "conversation_context": conversation_context,
         },
         "recursion_limit": 15,
     }

@@ -160,6 +160,7 @@ class QueryResponse(BaseModel):
     # chart_type: pie | bar | line; x_column / y_column (+ optional y_column_2) = exact result keys (sql_tools)
     chart_config: dict | None = None
     excel_download_url: str | None = None
+    response_kind: str | None = None
 
 
 def _assistant_chat_content(resp: QueryResponse) -> str:
@@ -183,6 +184,7 @@ def _assistant_payload_from_response(resp: QueryResponse) -> dict:
         "cache_doc_id": resp.cache_doc_id,
         "chart_config": resp.chart_config,
         "excel_download_url": resp.excel_download_url,
+        "response_kind": resp.response_kind,
     }
 
 
@@ -424,6 +426,7 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
         cache_doc_id=None,
         chart_config=tool_result.get("chart_config"),
         excel_download_url=excel_download_url,
+        response_kind=rk,
     )
 
 
@@ -461,7 +464,7 @@ async def handle_query(body: QueryRequest):
             conversation_id=conversation_id,
         )
 
-    # Client may send `messages` for sync; execution uses server store + LangGraph checkpoints.
+    # Client may send `messages` for UI sync; agent context uses server chat_store (see conversation_context).
     _ = body.messages
 
     chat_store.ensure_chat(conversation_id)
