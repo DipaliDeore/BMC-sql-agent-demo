@@ -13,6 +13,7 @@ import { hasRenderableChart } from "./chartConfig";
 import { isStrategicAdvisoryMessage, splitSqlStatements } from "./messageFormat";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import LoadingMessage from "./LoadingMessage";
 
 function SqlStatements({ sql, theme }) {
   const statements = splitSqlStatements(sql);
@@ -77,19 +78,20 @@ export default function MessageBubble({
     const n = message.streamRows?.length ?? 0;
     return (
       <div className="msg-animate" style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
-        <div className="assistant-msg-panel" style={{ width: "100%" }}>
-          {message.streamStatus && (
-            <div
-              style={{
-                fontSize: "12px",
-                fontWeight: 600,
-                color: "var(--text-muted)",
-                marginBottom: "10px",
-                letterSpacing: "0.02em",
-              }}
-            >
-              {message.streamStatus}
-            </div>
+        <div style={{ width: "100%" }}>
+          {message.streamStatus && !message.streamText && (
+            <>
+              <div
+                style={{
+                  height: "70px",
+                  display: "flex",
+                  justifyContent: "center",
+                  alignItems: "center",
+                }}
+              >
+                <LoadingMessage />
+              </div>
+            </>
           )}
 
           {message.streamText ? (
@@ -144,7 +146,7 @@ export default function MessageBubble({
   if (message.is_multi && message.sub_responses?.length) {
     return (
       <div className="msg-animate" style={{ display: "flex", justifyContent: "flex-start", width: "100%" }}>
-        <div className="assistant-msg-panel" style={{ width: "100%" }}>
+        <div style={{ width: "100%" }}>
           {message.explanation && (
             <div className="msg-body markdown-wrapper" style={{ marginBottom: "1.15rem" }}>
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.explanation}</ReactMarkdown>
