@@ -18,6 +18,7 @@ from app.checkpointer import get_checkpointer
 from app.llm_errors import invoke_with_retry, rate_limited
 from app.strategic_pipeline import execute_strategic_pipeline, should_use_strategic_pipeline
 from app.trend_pipeline import execute_trend_pipeline, should_use_trend_pipeline
+from app.what_if_pipeline import execute_what_if_pipeline, should_use_what_if_pipeline
 from app.serialization import make_json_serializable
 from app.response_formatting import (
     build_results_narrative,
@@ -34,6 +35,10 @@ from app.memory.pipeline import (
 )
 from app.chart_inference import apply_inferred_chart_from_plan
 from app.conversation_context import build_context_for_agent
+from app.global_memory import inject_global_memory
+from app import config as app_config
+from app.schema_index import build_schema_rag_text
+from app.schema_cache import get_cached_schema_hash
 
 
 AVAILABLE_TOOLS = [run_sql_query, render_chart]
@@ -60,11 +65,20 @@ def _get_llm() -> ChatGoogleGenerativeAI:
 def _prepend_system(state: dict, config: RunnableConfig) -> list:
     conf = config.get("configurable") or {}
     schema = conf.get("schema") or ""
+    current_question = (conf.get("current_question") or "").strip()
+    if getattr(app_config, "SCHEMA_RAG_IN_PROMPT", False) and schema and current_question:
+        rag = build_schema_rag_text(
+            current_question,
+            schema_hash=get_cached_schema_hash(),
+        )
+        if rag:
+            schema = f"{schema}\n\n{rag}"
     references_text = conf.get("references_text") or "No similar past queries available."
     conversation_context = (conf.get("conversation_context") or "").strip()
     plan_json = conf.get("plan_json") or "{}"
     tid = (conf.get("thread_id") or "").strip()
     memory_block = build_memory_preamble_for_system(tid)
+    global_memory_block = inject_global_memory().strip()
     try:
         plan = json.loads(plan_json)
         chart_hint = plan.get("chart_hint")
@@ -122,7 +136,7 @@ SQL RULES:
 - Never use SQLite/Postgres-only functions like strftime or date_trunc
 - For cross-table constraints (e.g., demand + stock), use proper joins or CTEs
 {memory_block}
-
+{f"{chr(10)}{global_memory_block}{chr(10)}" if global_memory_block else ""}
 PLANNER METADATA (JSON):
 {plan_json}
 
@@ -570,6 +584,11 @@ def generate_and_execute_with_tools(
         if trend_result is not None:
             return trend_result
 
+    if should_use_what_if_pipeline(question, plan):
+        what_if_result = execute_what_if_pipeline(question, schema, references_text)
+        if what_if_result is not None:
+            return what_if_result
+
     if should_use_strategic_pipeline(question, plan):
         strategic_result = execute_strategic_pipeline(
             question,
@@ -591,6 +610,7 @@ def generate_and_execute_with_tools(
             "references_text": references_text,
             "plan_json": json.dumps(plan),
             "conversation_context": conversation_context,
+            "current_question": question.strip(),
         },
         "recursion_limit": 15,
     }

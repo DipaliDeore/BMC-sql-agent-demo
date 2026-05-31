@@ -90,10 +90,14 @@ def validate_sql(sql_query: str) -> str:
     if not sql_query or not sql_query.strip():
         raise QueryValidationError("SQL query cannot be empty.")
 
-    # ── Check 2: SELECT Only ───────────────────────────────────────────────
+    # ── Check 2: SELECT (or WITH … SELECT) only ─────────────────────────────
     upper_query = sql_query.strip().upper()
 
-    if not upper_query.startswith("SELECT"):
+    is_select = upper_query.startswith("SELECT")
+    is_cte = upper_query.startswith("WITH") and bool(
+        re.search(r"\bSELECT\b", upper_query)
+    )
+    if not is_select and not is_cte:
         raise QueryValidationError(
             "Only SELECT queries are allowed. Data modification queries are not permitted."
         )
@@ -129,13 +133,31 @@ def validate_sql(sql_query: str) -> str:
     return sql_query
 
 
-DANGEROUS_KEYWORDS = [
-    "delete", "drop", "update", "insert", "truncate",
-    "alter", "remove", "erase", "clear", "destroy",
-    "modify", "change", "edit", "wipe",
-]
+# Natural-language destructive intent (command-like), not bare substrings.
+# Avoids false positives: "sales drop", "clarify", "what changed", etc.
+_DANGEROUS_NL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bdelete\s+(from|all|every|rows?|records?|data)\b", re.I),
+    re.compile(r"\bdelete\s+(the\s+)?(table|rows?|records?|data)\b", re.I),
+    re.compile(r"\bdrop\s+(table|database|index|view|schema|column)\b", re.I),
+    re.compile(r"\btruncate\s+(table|all)?\b", re.I),
+    re.compile(r"\binsert\s+into\b", re.I),
+    re.compile(r"\bupdate\s+[`\w.]+\s+set\b", re.I),
+    re.compile(r"\balter\s+table\b", re.I),
+    re.compile(r"\b(remove|erase|wipe|destroy)\s+(all|rows?|records?|data|from)\b", re.I),
+    re.compile(r"\b(modify|edit)\s+(the\s+)?(data|table|records?|database)\b", re.I),
+    re.compile(r"\bchange\s+(the\s+)?(data|table|records?|database|values)\b", re.I),
+    re.compile(r"\bclear\s+(the\s+)?(table|data|database|records?)\b", re.I),
+)
+
 
 def is_dangerous_input(question: str) -> bool:
-    """Check if the natural language question contains dangerous keywords."""
-    question_lower = question.lower()
-    return any(keyword in question_lower for keyword in DANGEROUS_KEYWORDS)
+    """
+    Detect destructive *intent* in a natural-language question.
+
+    Uses command-like phrases (e.g. ``drop table``, ``delete from``), not
+    substring matches, so analytics wording like "sales drop" is allowed.
+    """
+    text = (question or "").strip()
+    if not text:
+        return False
+    return any(p.search(text) for p in _DANGEROUS_NL_PATTERNS)

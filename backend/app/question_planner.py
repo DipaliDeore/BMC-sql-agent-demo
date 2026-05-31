@@ -184,11 +184,33 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
     if _contains_any(ql, ["frequent", "low stock"]) and not re.search(r"\b\d+\b", ql):
         intents.append("ambiguous_thresholds")
 
+    what_if_markers = (
+        "what if",
+        "what would happen",
+        "suppose ",
+        "hypothetically",
+        "hypothetical",
+        "simulate",
+        "simulation",
+        "scenario",
+    )
+    if _contains_any(ql, what_if_markers) or re.search(
+        r"\b(increase|decrease|drop|raise|lower|reduce|grow|decline)(d|s|ing)?\s+by\s+\d+(\.\d+)?\s*%",
+        ql,
+    ):
+        intents.append("what_if_scenario")
+
     for ent in ("customers", "orders", "order_items", "products", "payments", "warehouse_inventory", "shipping"):
         if ent in schema.lower() and _contains_any(ql, [ent.replace("_", " "), ent]):
             entities.append(ent)
 
-    if "strategic_recommendation" in intents:
+    if "what_if_scenario" in intents:
+        strategy = "what_if_mode"
+        assumptions.append(
+            "What-if results are simulated in SQL only; the database is not modified."
+        )
+
+    if "strategic_recommendation" in intents and strategy != "what_if_mode":
         strategy = "strategic_mode"
         assumptions.append("Recommendations are based on current historical transactional patterns.")
 

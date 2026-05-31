@@ -19,6 +19,9 @@ An **AI-powered SQL agent** that answers questions in plain English: it plans SQ
 - **Image attachments** in chat: vision pipeline (OpenAI) with configurable limits (`CHAT_IMAGE_*`)
 - **Hybrid conversation memory** (optional): rolling summary + structured memory in Postgres—see [docs/MEMORY.md](docs/MEMORY.md)
 - **Follow-up context**: prior turns (including vision/chart replies from `chat_store`) are injected into the agent so questions like “explain the chart above” use saved SQL, results, and `chart_config`
+- **Schema sync**: background job captures MySQL schema into a **TTL cache**, indexes table/FK chunks in **OpenSearch** (`OPENSEARCH_SCHEMA_INDEX_NAME`), and **clears the semantic query cache** when the schema hash changes
+- **Cross-chat global memory**: one evolving summary in Postgres `global_memory` (single user); merged when you **New chat**, **switch chats**, **delete a chat**, on **app load**, on **first query** (pending catch-up), or on **tab close** (best-effort)
+- **What-if analysis**: hypothetical questions (e.g. “What if sales increased by 10%?”) run **simulated SELECT** queries (baseline vs scenario), bar chart + comparison table — no database writes
 - **LangGraph checkpoints** + chat schema on **PostgreSQL** when `POSTGRES_URI` is set; otherwise in-memory
 
 ---
@@ -188,7 +191,12 @@ Full hybrid-memory knobs (`RECENT_MESSAGE_CAP`, `SUMMARY_TRIGGER_MESSAGES`, etc.
 | ------ | --- | ----------- |
 | `GET` | `/` | Server status JSON |
 | `GET` | `/api/test-db` | Test MySQL connectivity |
-| `GET` | `/api/schema` | Database schema for the agent |
+| `GET` | `/api/schema` | Database schema for the agent (TTL-cached; `?force_refresh=true` for live read) |
+| `GET` | `/api/schema/status` | Schema cache + sync status (hash, graph counts, last sync) |
+| `POST` | `/api/schema/sync` | Run schema sync now (re-index vectors / invalidate query cache if changed) |
+| `GET` | `/api/memory/global` | Current cross-chat memory summary |
+| `POST` | `/api/memory/merge-chat` | Merge a closing chat into global memory (body: `chat_id`) |
+| `POST` | `/api/memory/merge-pending` | Merge all unmerged chats (optional body: `exclude_chat_id`) |
 | `POST` | `/api/query` | Natural language question → SQL + results + narrative (JSON) |
 | `POST` | `/api/query/stream` | Same pipeline over **SSE** |
 | `GET` | `/api/chats` | List chat threads |

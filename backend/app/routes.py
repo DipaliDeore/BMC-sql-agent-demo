@@ -7,7 +7,9 @@ This file is responsible for:
 
 Endpoints:
     GET  /api/test-db   — Test the database connection
-    GET  /api/schema    — Return the database schema
+    GET  /api/schema    — Return the database schema (TTL cache)
+    GET  /api/schema/status — Schema sync + cache status
+    POST /api/schema/sync   — Trigger schema sync manually
     POST /api/query     — Ask a natural language question → get SQL + results + explanation
     POST /api/query/stream — Same pipeline as ``/api/query`` over SSE (tokens, status, rows, final JSON)
 
@@ -218,16 +220,69 @@ async def test_db_connection():
 # ── Endpoint 2: Get Database Schema ──────────────────────────────────────────
 
 @router.get("/schema")
-async def get_schema():
+async def get_schema(force_refresh: bool = False):
     """
-    Return the database schema.
+    Return the database schema (TTL-cached; refreshed by background sync).
 
-    URL: GET /api/schema
-    The schema describes all tables, columns, and relationships.
-    It is also used internally by the AI to generate correct SQL.
+    URL: GET /api/schema?force_refresh=true
     """
-    schema = get_database_schema()
+    schema = get_database_schema(force_refresh=force_refresh)
     return {"schema": schema}
+
+
+@router.get("/schema/status")
+async def get_schema_sync_status():
+    """Background sync, TTL cache, and schema graph metadata."""
+    from app.schema_sync import get_sync_status
+
+    return get_sync_status()
+
+
+@router.post("/schema/sync")
+async def trigger_schema_sync():
+    """Run schema sync now (capture DB, index vectors, invalidate cache if changed)."""
+    from app.schema_sync import run_schema_sync
+
+    result = run_schema_sync()
+    return result.to_dict()
+
+
+# ── Global long-term memory (single user) ─────────────────────────────────────
+
+
+class MergeChatMemoryBody(BaseModel):
+    chat_id: str = Field(..., min_length=1)
+
+
+class MergePendingMemoryBody(BaseModel):
+    exclude_chat_id: str | None = None
+
+
+@router.get("/memory/global")
+async def api_get_global_memory():
+    """Return the current cross-chat memory summary."""
+    from app.global_memory import get_global_memory
+
+    return {"memory_summary": get_global_memory()}
+
+
+@router.post("/memory/merge-chat")
+async def api_merge_chat_into_global_memory(body: MergeChatMemoryBody):
+    """
+    Merge a closing chat into global memory. Call before starting a new chat.
+    """
+    from app.global_memory import merge_chat_into_global_memory
+
+    return merge_chat_into_global_memory(body.chat_id)
+
+
+@router.post("/memory/merge-pending")
+async def api_merge_pending_global_memory(body: MergePendingMemoryBody | None = None):
+    """Merge all chats with unmerged messages (optional: skip active chat_id)."""
+    from app.global_memory import merge_pending_chats
+
+    exclude = (body.exclude_chat_id if body else None) or None
+    return merge_pending_chats(exclude_chat_id=exclude)
 
 
 # ── Endpoint 3: Handle Natural Language Query ─────────────────────────────────
@@ -239,6 +294,10 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
     Full NL → SQL pipeline. Wrapped in @traceable so LangSmith nests the query-analyzer
     RunnableSequence and the sql_react_agent / generator graph under one parent trace.
     """
+    from app.global_memory import merge_pending_chats
+
+    await asyncio.to_thread(merge_pending_chats, exclude_chat_id=conversation_id)
+
     # ── Schema + multi-query analysis (must run before branching) ───────────────
     schema = get_database_schema()
 

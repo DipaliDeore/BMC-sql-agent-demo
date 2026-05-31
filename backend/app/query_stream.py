@@ -42,6 +42,7 @@ from app.memory.pipeline import maybe_refresh_thread_memory_after_turn
 from app.question_planner import build_question_plan
 from app.strategic_pipeline import is_strategic_advisory_result, should_use_strategic_pipeline
 from app.trend_pipeline import should_use_trend_pipeline
+from app.what_if_pipeline import should_use_what_if_pipeline
 from app.chart_inference import apply_inferred_chart_from_plan
 from app.query_validator import QueryValidationError, validate_sql, is_dangerous_input
 from app.response_formatting import finalize_explanation, result_sentence_for_display
@@ -142,6 +143,7 @@ async def _stream_react_agent(
             "references_text": references_text,
             "plan_json": plan_json or "{}",
             "conversation_context": conversation_context,
+            "current_question": question.strip(),
         },
         "recursion_limit": cfg_recursion,
     }
@@ -406,6 +408,12 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
 
     loop = asyncio.get_running_loop()
 
+    from app.global_memory import merge_pending_chats
+
+    await loop.run_in_executor(
+        None, lambda: merge_pending_chats(exclude_chat_id=conversation_id)
+    )
+
     if is_dangerous_input(question):
         final = {
             "question": question,
@@ -491,6 +499,7 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
     # (avoids a heavy multi-turn ReAct loop that exhausts LLM quota).
     if (
         plan.get("strategy") == "deterministic_sql"
+        or should_use_what_if_pipeline(question, plan)
         or should_use_trend_pipeline(question, plan)
         or should_use_strategic_pipeline(question, plan)
     ):

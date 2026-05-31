@@ -100,6 +100,73 @@ Rules: concise bullet-style paragraphs; no chain-of-thought; max ~1200 words.
         )
 
 
+def generate_global_memory_summary(prior_summary: str, chat_transcript: str) -> str:
+    """
+    Merge prior cross-chat memory with a full chat transcript into one concise summary.
+
+    Keeps stable behavioral patterns; drops one-off numbers and temporary details.
+    """
+    prior = (prior_summary or "").strip()
+    transcript = (chat_transcript or "").strip()
+    if not transcript and not prior:
+        return ""
+    if not transcript:
+        return prior
+
+    cap = int(getattr(config, "GLOBAL_SUMMARY_MAX_CHARS", 8000) or 8000)
+    if len(transcript) > 16000:
+        transcript = transcript[:16000] + "\n…(transcript truncated)"
+
+    key = (config.SUMMARY_GEMINI_API_KEY or config.GEMINI_API_KEY or "").strip()
+    if not key:
+        return merge_rolling_summary(
+            prior,
+            "(Global memory merge skipped: no GEMINI API key)",
+        )
+
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash-lite",
+        google_api_key=key,
+        temperature=0,
+    )
+    prompt = f"""You maintain ONE evolving long-term memory for a single analytics user of a SQL assistant.
+
+Existing long-term memory (may be empty):
+{prior or "(none)"}
+
+Chat transcript to fold in (completed conversation):
+{transcript}
+
+Write an UPDATED long-term memory summary that:
+- Preserves stable patterns: preferred response style, recurring topics (sales, inventory, trends), typical question style, tables/metrics they often use.
+- Drops temporary details: specific row counts, one-off dates, exact SQL, chart numbers from this chat unless they define a lasting preference.
+- Uses short bullet points; max ~400 words.
+- Does NOT include chain-of-thought.
+
+Example style:
+* User prefers concise analytical responses.
+* Frequently asks sales and inventory questions.
+* Uses short prompts.
+* Often performs trend analysis.
+"""
+    try:
+        resp = llm.invoke(prompt)
+        text = getattr(resp, "content", str(resp))
+        if isinstance(text, list):
+            text = " ".join(
+                x.get("text", "") if isinstance(x, dict) else str(x) for x in text
+            )
+        text = (text or "").strip()
+        if len(text) > cap:
+            text = text[:cap] + "…"
+        return text
+    except Exception as e:
+        return merge_rolling_summary(
+            prior,
+            f"(Global memory merge failed: {e!s})",
+        )
+
+
 def extract_user_assistant_snippets(messages: Sequence[BaseMessage], max_msgs: int = 24) -> str:
     """Lightweight text for structured extraction (skip heavy tool bodies)."""
     lines: list[str] = []

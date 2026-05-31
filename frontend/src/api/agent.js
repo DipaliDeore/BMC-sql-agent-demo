@@ -62,6 +62,30 @@ export async function createChat(title) {
   return response.data;
 }
 
+/** Merge closing chat into cross-chat global memory. */
+export async function mergeChatIntoGlobalMemory(chatId) {
+  const response = await axios.post(`${API_BASE_URL}/api/memory/merge-chat`, {
+    chat_id: chatId,
+  });
+  return response.data;
+}
+
+/** Merge all chats not yet folded into global memory (skip active chat). */
+export async function mergePendingGlobalMemory(excludeChatId = null) {
+  const response = await axios.post(`${API_BASE_URL}/api/memory/merge-pending`, {
+    exclude_chat_id: excludeChatId ?? null,
+  });
+  return response.data;
+}
+
+/** Best-effort merge when the tab closes (sendBeacon; may not always complete). */
+export function beaconMergeChatIntoGlobalMemory(chatId) {
+  if (!chatId || typeof navigator.sendBeacon !== "function") return false;
+  const body = JSON.stringify({ chat_id: chatId });
+  const blob = new Blob([body], { type: "application/json" });
+  return navigator.sendBeacon(`${API_BASE_URL}/api/memory/merge-chat`, blob);
+}
+
 export async function getChatMessages(chatId) {
   const response = await axios.get(
     `${API_BASE_URL}/api/chats/${chatId}/messages`,

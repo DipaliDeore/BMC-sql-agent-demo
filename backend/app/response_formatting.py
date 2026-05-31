@@ -189,7 +189,7 @@ def finalize_explanation(
     response_kind: str | None = None,
 ) -> str:
     """Return one user-facing explanation without repeated scalar summaries."""
-    if response_kind in ("trend_series", "strategic_advisory", "image_db_grounded"):
+    if response_kind in ("trend_series", "strategic_advisory", "image_db_grounded", "what_if_analysis"):
         return (explanation or "").strip()
     narrative = build_results_narrative(results) if results else None
     if narrative and _is_single_scalar_result(results):
@@ -207,7 +207,7 @@ def result_sentence_for_display(
     response_kind: str | None = None,
 ) -> str | None:
     """Avoid repeating the scalar summary when it already appears in explanation."""
-    if response_kind in ("trend_series", "strategic_advisory", "image_db_grounded"):
+    if response_kind in ("trend_series", "strategic_advisory", "image_db_grounded", "what_if_analysis"):
         return None
     if results and len(results) == 1 and _is_time_series_result_row(results[0]):
         return None

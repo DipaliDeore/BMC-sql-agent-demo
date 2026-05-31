@@ -87,6 +87,20 @@ def init_chat_schema() -> None:
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS global_memory (
+            id SERIAL PRIMARY KEY,
+            memory_summary TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS global_memory_merged_chats (
+            chat_id UUID PRIMARY KEY REFERENCES bmcs_chats(id) ON DELETE CASCADE,
+            chat_updated_at TIMESTAMPTZ NOT NULL,
+            merged_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
     ]
     with pool.connection() as conn:
         with conn.cursor() as cur:

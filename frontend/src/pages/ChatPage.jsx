@@ -11,6 +11,9 @@ import {
   getApiErrorMessage,
   listChats,
   createChat,
+  mergeChatIntoGlobalMemory,
+  mergePendingGlobalMemory,
+  beaconMergeChatIntoGlobalMemory,
   getChatMessages,
   renameChat,
   deleteChat,
@@ -334,8 +337,21 @@ export default function ChatPage({ theme, toggleTheme }) {
     [activeChatId, runStream],
   );
 
+  const mergeClosingChat = useCallback(async (chatId) => {
+    if (!chatId) return;
+    const msgs = messagesByChat[chatId];
+    if (!msgs?.length) return;
+    try {
+      await mergeChatIntoGlobalMemory(chatId);
+    } catch (err) {
+      console.warn("[global memory] merge failed:", getApiErrorMessage(err));
+    }
+  }, [messagesByChat]);
+
   const handleNewChat = async () => {
     abortActiveStream();
+    const closingId = activeChatId;
+    await mergeClosingChat(closingId);
     const c = await createChat();
     setChats((prev) => [c, ...prev]);
     setActiveChatId(c.id);
@@ -344,7 +360,9 @@ export default function ChatPage({ theme, toggleTheme }) {
   };
 
   const handleSelectChat = async (id) => {
-    if (id !== activeChatId) abortActiveStream();
+    if (id === activeChatId) return;
+    abortActiveStream();
+    await mergeClosingChat(activeChatId);
     setActiveChatId(id);
     await loadMessages(id);
   };
@@ -356,6 +374,7 @@ export default function ChatPage({ theme, toggleTheme }) {
 
   const handleDeleteChat = async (id) => {
     if (id === activeChatId) abortActiveStream();
+    await mergeClosingChat(id);
     await deleteChat(id);
     const list = await refreshChats();
     if (list.length > 0) {
@@ -380,6 +399,11 @@ export default function ChatPage({ theme, toggleTheme }) {
         setChats(list);
         setActiveChatId(list[0].id);
         await loadMessages(list[0].id);
+        try {
+          await mergePendingGlobalMemory(list[0].id);
+        } catch (err) {
+          console.warn("[global memory] pending merge failed:", getApiErrorMessage(err));
+        }
       } catch (err) {
         setInitError(getApiErrorMessage(err));
       }
@@ -389,6 +413,18 @@ export default function ChatPage({ theme, toggleTheme }) {
   useEffect(() => {
     return () => abortActiveStream();
   }, [abortActiveStream]);
+
+  useEffect(() => {
+    const onPageHide = () => {
+      const chatId = activeChatId;
+      const msgs = chatId ? messagesByChat[chatId] : null;
+      if (chatId && msgs?.length) {
+        beaconMergeChatIntoGlobalMemory(chatId);
+      }
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [activeChatId, messagesByChat]);
 
   if (initError && !activeChatId) {
     return (

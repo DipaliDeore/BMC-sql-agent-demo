@@ -44,6 +44,29 @@ DB_CA_CERT: str  = os.getenv("DB_CA_CERT", "")
 # ── OpenSearch (semantic cache for question → SQL) ─────────────────────────────
 OPENSEARCH_URL: str = os.getenv("OPENSEARCH_URL", "http://localhost:9200")
 OPENSEARCH_INDEX_NAME: str = os.getenv("OPENSEARCH_INDEX_NAME", "sql-agent-cache")
+OPENSEARCH_SCHEMA_INDEX_NAME: str = os.getenv(
+    "OPENSEARCH_SCHEMA_INDEX_NAME", "sql-agent-schema"
+)
+
+# Schema TTL cache + background sync (OpenSearch schema vectors + cache invalidation)
+SCHEMA_CACHE_TTL_SECONDS: int = int(os.getenv("SCHEMA_CACHE_TTL_SECONDS", "300"))
+SCHEMA_SYNC_INTERVAL_SECONDS: int = int(os.getenv("SCHEMA_SYNC_INTERVAL_SECONDS", "300"))
+SCHEMA_SYNC_ENABLED = os.getenv("SCHEMA_SYNC_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+SCHEMA_INDEX_ENABLED = os.getenv("SCHEMA_INDEX_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+SCHEMA_RAG_IN_PROMPT = os.getenv("SCHEMA_RAG_IN_PROMPT", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+SCHEMA_RAG_TOP_K: int = int(os.getenv("SCHEMA_RAG_TOP_K", "8"))
 
 # ── OpenAI (embeddings for OpenSearch k-NN cache; text-embedding-3-small) ───────
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
@@ -89,5 +112,13 @@ SUMMARY_MAX_CHARS = int(os.getenv("SUMMARY_MAX_CHARS", "8000"))
 STRUCTURED_MEMORY_JSON_MAX_CHARS = int(os.getenv("STRUCTURED_MEMORY_JSON_MAX_CHARS", "4000"))
 TOOL_DIGEST_MAX_CHARS = int(os.getenv("TOOL_DIGEST_MAX_CHARS", "6000"))
 MEMORY_SUMMARY_DEBOUNCE_MESSAGES = int(os.getenv("MEMORY_SUMMARY_DEBOUNCE_MESSAGES", "8"))
+
+# Cross-chat long-term memory (single user; one row in global_memory)
+GLOBAL_MEMORY_ENABLED = os.getenv("GLOBAL_MEMORY_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+GLOBAL_SUMMARY_MAX_CHARS = int(os.getenv("GLOBAL_SUMMARY_MAX_CHARS", "8000"))
 
 

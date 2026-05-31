@@ -29,10 +29,13 @@ from app.error_handlers import register_error_handlers
 async def lifespan(app: FastAPI):
     from app.checkpointer import init_checkpointer, shutdown_checkpointer
     from app.chat_store import init_chat_schema
+    from app.schema_sync import start_background_schema_sync, stop_background_schema_sync
 
     init_checkpointer()
     init_chat_schema()
+    start_background_schema_sync()
     yield
+    stop_background_schema_sync()
     shutdown_checkpointer()
 
 

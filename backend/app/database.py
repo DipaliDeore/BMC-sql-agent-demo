@@ -175,59 +175,17 @@ def iter_query_rows(sql_query: str, *, batch_size: int = 200):
 # 3. get_database_schema
 # ---------------------------------------------------------------------------
 
-def get_database_schema() -> str:
+def get_database_schema(*, force_refresh: bool = False) -> str:
     """
-    Return a plain-text description of the database schema.
-    
-    This schema is dynamically fetched from the database, including tables,
-    columns, and foreign key relationships.
+    Return a plain-text description of the database schema (TTL-cached).
 
-    Returns:
-        str: A formatted string describing all tables, columns, and relationships.
+    Uses ``schema_cache`` with periodic background refresh via ``schema_sync``.
+    Set ``force_refresh=True`` to bypass TTL and read live from the database.
     """
-    connection = None
-    cursor = None
-    schema_lines = []
+    from app.schema_cache import get_cached_schema_text
 
     try:
-        connection = get_db_connection()
-        cursor = connection.cursor(dictionary=True)
-        
-        # 1. Fetch tables
-        cursor.execute("SHOW TABLES")
-        tables = [list(row.values())[0] for row in cursor.fetchall()]
-        
-        # 2. Fetch columns for each table
-        for table in tables:
-            cursor.execute(f"DESCRIBE `{table}`")
-            columns = [row['Field'] for row in cursor.fetchall()]
-            schema_lines.append(f"Table: {table}")
-            schema_lines.append(f"Columns: {', '.join(columns)}\n")
-            
-        # 3. Fetch foreign key relationships
-        cursor.execute("""
-            SELECT TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME 
-            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
-            WHERE REFERENCED_TABLE_SCHEMA = %s AND REFERENCED_TABLE_NAME IS NOT NULL
-        """, (config.DB_NAME,))
-        fks = cursor.fetchall()
-        
-        if fks:
-            schema_lines.append("Relationships:")
-            for fk in fks:
-                schema_lines.append(
-                    f"{fk['TABLE_NAME']}.{fk['COLUMN_NAME']} \u2192 {fk['REFERENCED_TABLE_NAME']}.{fk['REFERENCED_COLUMN_NAME']}"
-                )
-                
-        return "\n".join(schema_lines).strip()
-        
+        return get_cached_schema_text(force_refresh=force_refresh)
     except Exception as e:
         print(f"Warning: Failed to fetch dynamic schema: {e}")
-        # Fallback to generic message or fail gracefully if the database isn't working
         return "Schema unavailable. Database connection failed."
-        
-    finally:
-        if cursor:
-            cursor.close()
-        if connection and connection.is_connected():
-            connection.close()
