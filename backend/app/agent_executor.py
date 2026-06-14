@@ -17,6 +17,7 @@ from app import config
 from app.checkpointer import get_checkpointer
 from app.llm_errors import invoke_with_retry, rate_limited
 from app.strategic_pipeline import execute_strategic_pipeline, should_use_strategic_pipeline
+from app.forecast_pipeline import execute_forecast_pipeline, should_use_forecast_pipeline
 from app.trend_pipeline import execute_trend_pipeline, should_use_trend_pipeline
 from app.what_if_pipeline import execute_what_if_pipeline, should_use_what_if_pipeline
 from app.serialization import make_json_serializable
@@ -37,6 +38,7 @@ from app.chart_inference import apply_inferred_chart_from_plan
 from app.conversation_context import build_context_for_agent
 from app.global_memory import inject_global_memory
 from app import config as app_config
+from app.query_freshness import needs_fresh_metric_query, needs_live_database_query
 from app.schema_index import build_schema_rag_text
 from app.schema_cache import get_cached_schema_hash
 
@@ -77,8 +79,11 @@ def _prepend_system(state: dict, config: RunnableConfig) -> list:
     conversation_context = (conf.get("conversation_context") or "").strip()
     plan_json = conf.get("plan_json") or "{}"
     tid = (conf.get("thread_id") or "").strip()
-    memory_block = build_memory_preamble_for_system(tid)
-    global_memory_block = inject_global_memory().strip()
+    fresh_data_query = bool(conf.get("fresh_data_query"))
+    memory_block = build_memory_preamble_for_system(tid, fresh_data_query=fresh_data_query)
+    global_memory_block = (
+        "" if fresh_data_query else inject_global_memory().strip()
+    )
     try:
         plan = json.loads(plan_json)
         chart_hint = plan.get("chart_hint")
@@ -132,7 +137,8 @@ SQL RULES:
 - No hallucination
 - Target dialect is MySQL/TiDB only
 - For categorical / enum columns (e.g. payment_status, order_status): NEVER guess display strings like 'Successful' vs database values like 'COMPLETED'. Run `SELECT DISTINCT column_name FROM table ORDER BY 1 LIMIT 50` (or read literals shown in the schema) and use EXACT values from the database in CASE/WHERE/GROUP BY.
-- For month-wise grouping, use MySQL date functions such as DATE_FORMAT(order_date, '%Y-%m'), MONTH(order_date), YEAR(order_date)
+- For total revenue or total payment amount (all-time): use `SELECT SUM(amount) FROM payments` — do NOT use `order_items` unless the user explicitly asks for line-item product sales.
+- If the database schema includes `payments.amount`, treat that as the canonical revenue source for revenue/payment questions.
 - Never use SQLite/Postgres-only functions like strftime or date_trunc
 - For cross-table constraints (e.g., demand + stock), use proper joins or CTEs
 {memory_block}
@@ -146,16 +152,26 @@ Database Schema:
 References:
 {references_text}
 """
-    if conversation_context:
+    if conversation_context and not fresh_data_query:
         system_content += f"""
 
-PRIOR CONVERSATION (from server chat history — authoritative for follow-ups):
+PRIOR CONVERSATION (from server chat history — for explaining earlier charts/results only):
 {conversation_context}
 
 Follow-up rules:
-- If the user refers to "the chart above", "that graph", "those numbers", or earlier SQL/results, answer using PRIOR CONVERSATION. A chart may already be visible in the UI even if you did not call render_chart in this turn.
-- Do not claim that no chart or no data was shown when PRIOR CONVERSATION documents SQL, results, or chart_config.
-- Answer in plain text without new SQL/tools unless the user asks for new or updated data.
+- If the user refers to "the chart above", "that graph", or "explain that answer", use PRIOR CONVERSATION.
+- For ANY question that requests data, counts, totals, lists, or metrics from the database, you MUST call `run_sql_query` — never reuse numeric answers from PRIOR CONVERSATION or earlier tool results. The database is updated in real time.
+"""
+        if needs_fresh_metric_query(current_question):
+            system_content += """
+METRIC REFRESH (required): Run a fresh SQL query now for this total/aggregate question.
+"""
+    elif fresh_data_query:
+        system_content += """
+
+LIVE DATABASE (required): This question needs current data from the database.
+You MUST call `run_sql_query` — ignore any older numbers from this chat thread.
+The database may have been updated since earlier messages.
 """
     raw = state.get("messages") or []
     msgs = apply_hybrid_message_view(raw, config)
@@ -579,6 +595,23 @@ def generate_and_execute_with_tools(
                     ],
                 }
 
+    if should_use_forecast_pipeline(question, plan):
+        forecast_result = execute_forecast_pipeline(question, schema, references_text)
+        if forecast_result is not None:
+            return forecast_result
+        return {
+            "sql_query": "",
+            "explanation": (
+                "I could not build a forecast from the available historical data. "
+                "Try a clearer time horizon, e.g. “Predict revenue for the next 3 months.”"
+            ),
+            "results": [],
+            "row_count": 0,
+            "status": "success",
+            "is_multi": False,
+            "response_kind": "forecast_series",
+        }
+
     if should_use_trend_pipeline(question, plan):
         trend_result = execute_trend_pipeline(question, schema, references_text)
         if trend_result is not None:
@@ -601,7 +634,12 @@ def generate_and_execute_with_tools(
             return strategic_result
 
     tid = (thread_id or "").strip() or str(uuid.uuid4())
-    conversation_context = build_context_for_agent(tid, current_question=question)
+    live_query = needs_live_database_query(question, plan)
+    conversation_context = (
+        ""
+        if live_query
+        else build_context_for_agent(tid, current_question=question)
+    )
     app = _get_agent_app()
     cfg: RunnableConfig = {
         "configurable": {
@@ -611,6 +649,7 @@ def generate_and_execute_with_tools(
             "plan_json": json.dumps(plan),
             "conversation_context": conversation_context,
             "current_question": question.strip(),
+            "fresh_data_query": live_query,
         },
         "recursion_limit": 15,
     }

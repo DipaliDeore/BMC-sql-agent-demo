@@ -177,9 +177,11 @@ class FeedbackProcessingError(Exception):
 # ── Core logic ────────────────────────────────────────────────────────────────
 
 
-def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:
+def submit_feedback(body: FeedbackRequest) -> tuple[FeedbackResponse, dict[str, Any] | None]:
     """
     Thumbs-up only → OpenSearch (embedding + store_query). All other outcomes → log file only.
+
+    Returns (response, slack_entry) where slack_entry is set for thumbs-down events.
     """
     query = (body.query or "").strip()
     response = (body.response or "").strip()
@@ -214,7 +216,7 @@ def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:
 
         # Already in OpenSearch? Return early
         if client.exists(index=index_name, id=doc_id):
-            return FeedbackResponse(status="stored_in_vector_db")
+            return FeedbackResponse(status="stored_in_vector_db"), None
 
         sql_for_store = sql_stored
         if isinstance(body.metadata, dict) and body.metadata:
@@ -240,7 +242,7 @@ def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:
                 "Check OPENAI_API_KEY and OpenSearch connectivity.",
             )
 
-        return FeedbackResponse(status="stored_in_vector_db")
+        return FeedbackResponse(status="stored_in_vector_db"), None
 
     # Thumbs down: log to file and remove from OpenSearch if present
     if feedback_type == "down":
@@ -287,8 +289,10 @@ def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:
                 "session_id": session_id
             }
 
+        if isinstance(body.metadata, dict) and body.metadata:
+            entry["metadata"] = body.metadata
         log_feedback_to_file(entry)
-        return FeedbackResponse(status="logged")
+        return FeedbackResponse(status="logged"), entry
 
     # No feedback: log to file
     if feedback_type == "none":
@@ -302,7 +306,7 @@ def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:
             "session_id": session_id
         }
         log_feedback_to_file(entry)
-        return FeedbackResponse.model_validate({"status": "logged", "label": "NO_FEEDBACK"})
+        return FeedbackResponse.model_validate({"status": "logged", "label": "NO_FEEDBACK"}), None
 
     # For any other feedback type, just log as before (fallback)
     entry = {
@@ -315,7 +319,7 @@ def submit_feedback(body: FeedbackRequest) -> FeedbackResponse:
         "session_id": session_id
     }
     log_feedback_to_file(entry)
-    return FeedbackResponse.model_validate({"status": "logged", "label": "UNKNOWN_FEEDBACK"})
+    return FeedbackResponse.model_validate({"status": "logged", "label": "UNKNOWN_FEEDBACK"}), None
 
 
 # ── Router (mounted at app root as POST /feedback) ────────────────────────────
@@ -327,6 +331,18 @@ feedback_router = APIRouter(tags=["Feedback"])
 async def post_feedback(body: FeedbackRequest) -> FeedbackResponse:
     """Record user feedback; only explicit thumbs-up uses the semantic cache."""
     try:
-        return await asyncio.to_thread(submit_feedback, body)
+        result, slack_entry = await asyncio.to_thread(submit_feedback, body)
+        if slack_entry is not None:
+            from app.services.slack_notify import send_negative_feedback_to_slack
+
+            slack_ok = await asyncio.to_thread(
+                send_negative_feedback_to_slack, slack_entry
+            )
+            if not slack_ok:
+                print(
+                    "[Feedback] Slack notification skipped or failed "
+                    "(check SLACK_FEEDBACK_WEBHOOK_URL and SLACK_FEEDBACK_ENABLED)"
+                )
+        return result
     except FeedbackProcessingError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

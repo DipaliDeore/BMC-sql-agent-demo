@@ -14,7 +14,7 @@ An **AI-powered SQL agent** that answers questions in plain English: it plans SQ
 - **SQL safety** via `query_validator` (dangerous input + non-SELECT blocking)
 - **Results** as tables; **charts** (line, bar, pie) via Recharts; **SQL viewer** with syntax highlighting
 - **Excel export** for larger result sets (download via `/api/export/{filename}.xlsx`)
-- **Thumbs feedback** (`POST /feedback`)—positive feedback can feed **semantic cache** when OpenSearch + OpenAI embeddings are configured
+- **Thumbs feedback** (`POST /feedback`)—positive feedback can feed **semantic cache** when OpenSearch + OpenAI embeddings are configured; thumbs-down can alert a **Slack channel** via `SLACK_FEEDBACK_WEBHOOK_URL`
 - **Similar past queries** (OpenSearch k-NN) when cache stack is enabled
 - **Image attachments** in chat: vision pipeline (OpenAI) with configurable limits (`CHAT_IMAGE_*`)
 - **Hybrid conversation memory** (optional): rolling summary + structured memory in Postgres—see [docs/MEMORY.md](docs/MEMORY.md)
@@ -22,6 +22,8 @@ An **AI-powered SQL agent** that answers questions in plain English: it plans SQ
 - **Schema sync**: background job captures MySQL schema into a **TTL cache**, indexes table/FK chunks in **OpenSearch** (`OPENSEARCH_SCHEMA_INDEX_NAME`), and **clears the semantic query cache** when the schema hash changes
 - **Cross-chat global memory**: one evolving summary in Postgres `global_memory` (single user); merged when you **New chat**, **switch chats**, **delete a chat**, on **app load**, on **first query** (pending catch-up), or on **tab close** (best-effort)
 - **What-if analysis**: hypothetical questions (e.g. “What if sales increased by 10%?”) run **simulated SELECT** queries (baseline vs scenario), bar chart + comparison table — no database writes
+- **Statistical forecasting**: predict/forecast questions (e.g. “Predict next 3 months sales”) fetch historical time-series via SQL, run **ARIMA** (or linear fallback) in Python, and show actual + projected values on a line chart with caveats
+- **Query freshness**: open-ended metric questions (e.g. total revenue) bypass stale semantic-cache SQL and chat memory so answers always hit the live database
 - **LangGraph checkpoints** + chat schema on **PostgreSQL** when `POSTGRES_URI` is set; otherwise in-memory
 
 ---
@@ -34,6 +36,7 @@ An **AI-powered SQL agent** that answers questions in plain English: it plans SQ
 | Orchestration | LangGraph, LangChain, LangSmith (tracing) |
 | Primary LLM  | Google Gemini (`gemini-2.5-flash` in agent; `gemini-2.5-flash-lite` for memory summaries) |
 | Database     | MySQL-compatible (TiDB Cloud default in docs); `mysql-connector-python` |
+| Forecasting  | `pandas` + `statsmodels` (ARIMA with linear fallback) |
 | Optional cache | OpenSearch + OpenAI `text-embedding-3-small` |
 | Optional vision | OpenAI Chat Completions (`OPENAI_VISION_MODEL`, default `gpt-4o-mini`) |
 | Persistence  | PostgreSQL (`POSTGRES_URI`) for checkpoints + `chat_store` + optional `bmcs_thread_memory` |
@@ -49,7 +52,7 @@ An **AI-powered SQL agent** that answers questions in plain English: it plans SQ
 - Node.js 18+
 - [Google Gemini API key](https://aistudio.google.com/) (required for the agent)
 - TiDB Cloud or **MySQL 8.0+** reachable from the backend
-- **Optional:** [OpenAI API key](https://platform.openai.com/) (embeddings + vision), OpenSearch 2.x, PostgreSQL 15+
+- **Optional:** [OpenAI API key](https://platform.openai.com/) (embeddings + vision), OpenSearch 2.x, PostgreSQL 15+, Slack Incoming Webhook (thumbs-down alerts)
 
 ### 1. Repository layout
 
@@ -109,7 +112,12 @@ backend/
 │   ├── agent_executor.py       # LangGraph + Gemini tool agent
 │   ├── tools/sql_tools.py      # Agent SQL tools
 │   ├── query_stream.py         # SSE streaming for /api/query/stream
-│   ├── question_planner.py     # Multi-query / analysis helpers
+│   ├── question_planner.py     # Intent routing (forecast, what-if, trend, etc.)
+│   ├── forecast_pipeline.py    # ARIMA / linear statistical forecasting
+│   ├── trend_pipeline.py       # Time-series trend SQL + charts
+│   ├── what_if_pipeline.py     # Hypothetical scenario comparison (read-only)
+│   ├── query_freshness.py      # Live DB re-query for open metric questions
+│   ├── pipeline_sql_utils.py   # Shared SQL helpers for pipelines
 │   ├── chat_store.py           # Chat threads + messages (Postgres or memory)
 │   ├── checkpointer.py         # LangGraph Postgres (or memory) checkpoints
 │   ├── thread_memory.py        # Hybrid memory persistence
@@ -121,6 +129,7 @@ backend/
 │   ├── excel_export.py         # XLSX generation
 │   ├── response_formatting.py  # Narratives merged with model explanations
 │   ├── services/feedback_service.py   # POST /feedback
+│   ├── services/slack_notify.py         # Thumbs-down Slack webhook alerts
 │   └── ...
 ├── exports/                    # Generated Excel files (served via /api/export)
 ├── scripts/postgres_app_grants.sql    # DB grants hint for non-superuser Postgres
@@ -180,8 +189,11 @@ DB_NAME=sql_agent_demo
 | `OPENAI_VISION_MODEL` | Vision model (default `gpt-4o-mini`) |
 | `HYBRID_MEMORY_ENABLED` | `true` to enable hybrid memory (full list in [docs/MEMORY.md](docs/MEMORY.md)) |
 | `MAX_SQL_RETRIES`, `MAX_RESULT_ROWS`, `EXCEL_INLINE_LIMIT` | Agent retries, row cap, Excel threshold |
+| `FORECAST_MIN_HISTORY_POINTS`, `FORECAST_DEFAULT_HORIZON` | Minimum history rows and default forecast horizon (see `forecast_pipeline.py`) |
+| `SLACK_FEEDBACK_WEBHOOK_URL` | Slack Incoming Webhook URL for thumbs-down alerts |
+| `SLACK_FEEDBACK_ENABLED`, `SLACK_FEEDBACK_TIMEOUT_SECONDS` | Toggle Slack alerts (default on) and HTTP timeout |
 
-Full hybrid-memory knobs (`RECENT_MESSAGE_CAP`, `SUMMARY_TRIGGER_MESSAGES`, etc.) are documented in **[docs/MEMORY.md](docs/MEMORY.md)**.
+Full hybrid-memory knobs (`RECENT_MESSAGE_CAP`, `SUMMARY_TRIGGER_MESSAGES`, etc.) are documented in **[docs/MEMORY.md](docs/MEMORY.md)**. See **`backend/.env.example`** for the complete list of tunables.
 
 ---
 
@@ -215,10 +227,27 @@ OpenAPI details: `/docs`.
 
 Once your database has tables, try prompts like:
 
+**Standard SQL**
+
 - *"Show me the top 10 customers by total orders"*
 - *"How many orders were placed this month?"*
 - *"List products with price greater than 50"*
 - *"What is the average order value per region?"*
+
+**Trends & comparisons**
+
+- *"Show monthly revenue trend for the last 12 months"*
+- *"Compare sales by region this year vs last year"*
+
+**What-if scenarios** (simulated `SELECT`; no writes)
+
+- *"What if sales increased by 10%?"*
+- *"What would revenue look like if we raised prices by 5%?"*
+
+**Forecasting** (requires enough historical time-series data)
+
+- *"Predict next 3 months sales"*
+- *"Forecast revenue for the next quarter"*
 
 ---
 

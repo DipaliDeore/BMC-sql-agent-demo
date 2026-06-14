@@ -40,7 +40,10 @@ from app.conversation_context import build_context_for_agent
 from app.database import execute_query, get_database_schema, select_sql_with_row_limit
 from app.memory.pipeline import maybe_refresh_thread_memory_after_turn
 from app.question_planner import build_question_plan
+from app import config as app_config
+from app.query_freshness import cached_sql_safe_for_replay, prefer_unfiltered_sql
 from app.strategic_pipeline import is_strategic_advisory_result, should_use_strategic_pipeline
+from app.forecast_pipeline import should_use_forecast_pipeline
 from app.trend_pipeline import should_use_trend_pipeline
 from app.what_if_pipeline import should_use_what_if_pipeline
 from app.chart_inference import apply_inferred_chart_from_plan
@@ -377,6 +380,7 @@ def _materialize_http_final(
         status == "success"
         and not (tr.get("results") or [])
         and not is_strategic_advisory_result(tr)
+        and tr.get("response_kind") not in ("forecast_series", "trend_series")
     ):
         subs = tr.get("sub_responses") or []
         has_sub_rows = any(len(s.get("results") or []) > 0 for s in subs)
@@ -499,6 +503,7 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
     # (avoids a heavy multi-turn ReAct loop that exhausts LLM quota).
     if (
         plan.get("strategy") == "deterministic_sql"
+        or should_use_forecast_pipeline(question, plan)
         or should_use_what_if_pipeline(question, plan)
         or should_use_trend_pipeline(question, plan)
         or should_use_strategic_pipeline(question, plan)
@@ -525,9 +530,17 @@ async def streaming_query_handler(body: Any) -> AsyncIterator[bytes]:
                 if isinstance(row_data, dict):
                     yield _sse_data({"type": "data", "content": row_data})
 
-    # Fast Path: exact cache match bypasses LLM to save quota
-    if tool_result is None and cache_refs and cache_refs[0].get("score", 0.0) >= 0.99:
-        exact_sql = cache_refs[0]["sql"]
+    # Fast Path: optional exact cache match (disabled by default)
+    if (
+        app_config.CACHE_FAST_PATH_ENABLED
+        and tool_result is None
+        and cache_refs
+        and cache_refs[0].get("score", 0.0) >= 0.99
+        and cached_sql_safe_for_replay(
+            question, prefer_unfiltered_sql(cache_refs[0].get("sql") or ""), plan
+        )
+    ):
+        exact_sql = prefer_unfiltered_sql(cache_refs[0]["sql"])
         limited_sql = select_sql_with_row_limit(exact_sql)
         yield _sse_data({"type": "status", "content": "executing_sql"})
         yield _sse_data({"type": "sql", "content": limited_sql})

@@ -46,6 +46,13 @@ def apply_hybrid_message_view(
         return list(raw_messages)
 
     tid = (runnable_config.get("configurable") or {}).get("thread_id") or ""
+    fresh = bool((runnable_config.get("configurable") or {}).get("fresh_data_query"))
+    if fresh:
+        u = last_human_message_index(raw_messages)
+        if u >= 0:
+            return _sanitize_tool_call_sequences([raw_messages[u]])
+        return _sanitize_tool_call_sequences(list(raw_messages)[-1:])
+
     cap = int(getattr(config, "RECENT_MESSAGE_CAP", 30) or 30)
 
     processed = _digest_tools_before_last_user(raw_messages)
@@ -120,9 +127,13 @@ def _system_memory_blocks(thread_id: str) -> tuple[str, str]:
     return summary, sj
 
 
-def build_memory_preamble_for_system(thread_id: str) -> str:
+def build_memory_preamble_for_system(
+    thread_id: str,
+    *,
+    fresh_data_query: bool = False,
+) -> str:
     """Sections appended inside the main system string."""
-    if not getattr(config, "HYBRID_MEMORY_ENABLED", False):
+    if fresh_data_query or not getattr(config, "HYBRID_MEMORY_ENABLED", False):
         return ""
     summary, sj = _system_memory_blocks(thread_id)
     parts: list[str] = []

@@ -41,6 +41,7 @@ from app.agent_executor import generate_and_execute_with_tools
 from app.chart_inference import apply_inferred_chart_from_plan
 from app import chat_store
 from app.question_planner import build_question_plan
+from app.query_freshness import cached_sql_safe_for_replay, prefer_unfiltered_sql
 from app.response_formatting import (
     finalize_explanation,
     result_sentence_for_display,
@@ -212,9 +213,28 @@ async def test_db_connection():
 
     return {
         "message": "Database connection successful!",
+        "database": config.DB_NAME,
+        "host": config.DB_HOST,
         "rows_returned": len(result),
-        "data": result
+        "data": result,
+        "live_stats": _live_db_stats(),
     }
+
+
+def _live_db_stats() -> dict:
+    """Quick sanity check that the app reads the current TiDB dataset."""
+    stats: dict = {}
+    for label, sql in (
+        ("payments_count", "SELECT COUNT(*) AS c FROM payments"),
+        ("payments_total", "SELECT COALESCE(SUM(amount), 0) AS t FROM payments"),
+    ):
+        try:
+            rows = execute_query(sql)
+            if isinstance(rows, list) and rows:
+                stats[label] = rows[0]
+        except Exception as exc:
+            stats[label] = {"error": str(exc)}
+    return stats
 
 
 # ── Endpoint 2: Get Database Schema ──────────────────────────────────────────
@@ -333,38 +353,43 @@ async def _execute_nl_query(body: QueryRequest, conversation_id: str) -> QueryRe
         except QueryValidationError:
             continue
 
-    # Fast Path: bypass LLM if exact match is found
-    if filtered_examples and filtered_examples[0].get("score", 0.0) >= 0.99:
+    # Fast Path: optional exact cache match (disabled by default — see CACHE_FAST_PATH_ENABLED)
+    plan_fast = build_question_plan(body.question, schema)
+    if (
+        config.CACHE_FAST_PATH_ENABLED
+        and filtered_examples
+        and filtered_examples[0].get("score", 0.0) >= 0.99
+    ):
         exact_match = filtered_examples[0]
-        exact_sql = exact_match["sql"]
-        db_res = execute_query(exact_sql)
-        if not (isinstance(db_res, dict) and "error" in db_res):
-            explanation = finalize_explanation(
-                db_res,
-                "I ran a matching query for your question and retrieved the results below.",
-            )
+        exact_sql = prefer_unfiltered_sql(exact_match["sql"])
+        if cached_sql_safe_for_replay(body.question, exact_sql, plan_fast):
+            db_res = execute_query(exact_sql)
+            if not (isinstance(db_res, dict) and "error" in db_res):
+                explanation = finalize_explanation(
+                    db_res,
+                    "I ran a matching query for your question and retrieved the results below.",
+                )
 
-            plan_fast = build_question_plan(body.question, schema)
-            fast_summary: dict = {
-                "status": "success",
-                "is_multi": False,
-                "chart_config": None,
-                "results": db_res,
-            }
-            apply_inferred_chart_from_plan(fast_summary, plan_fast)
+                fast_summary: dict = {
+                    "status": "success",
+                    "is_multi": False,
+                    "chart_config": None,
+                    "results": db_res,
+                }
+                apply_inferred_chart_from_plan(fast_summary, plan_fast)
 
-            return QueryResponse(
-                question=body.question,
-                sql=select_sql_with_row_limit(exact_sql),
-                results=db_res,
-                explanation=explanation,
-                row_count=len(db_res),
-                result_sentence=result_sentence_for_display(db_res, None, explanation),
-                cache_references=filtered_examples or None,
-                conversation_id=conversation_id,
-                cache_doc_id=None,
-                chart_config=fast_summary.get("chart_config"),
-            )
+                return QueryResponse(
+                    question=body.question,
+                    sql=select_sql_with_row_limit(exact_sql),
+                    results=db_res,
+                    explanation=explanation,
+                    row_count=len(db_res),
+                    result_sentence=result_sentence_for_display(db_res, None, explanation),
+                    cache_references=filtered_examples or None,
+                    conversation_id=conversation_id,
+                    cache_doc_id=None,
+                    chart_config=fast_summary.get("chart_config"),
+                )
 
     tool_result = generate_and_execute_with_tools(
         body.question,

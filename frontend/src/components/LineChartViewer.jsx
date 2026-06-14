@@ -29,6 +29,7 @@ export default function LineChartViewer({ data, config }) {
   const xKey = config?.x_column;
   const yKey = config?.y_column;
   const y2Key = (config?.y_column_2 || "").trim() || null;
+  const forecastDashed = Boolean(config?.forecast_dashed && y2Key);
 
   const chartData = useMemo(() => {
     if (!data?.length || !xKey || !yKey) return [];
@@ -102,7 +103,7 @@ export default function LineChartViewer({ data, config }) {
           <Line
             type="monotone"
             dataKey={yKey}
-            name={yKey}
+            name={forecastDashed ? "Actual" : yKey}
             stroke="#7c3aed"
             strokeWidth={2}
             dot={{ r: 3, fill: "#7c3aed" }}
@@ -113,9 +114,10 @@ export default function LineChartViewer({ data, config }) {
             <Line
               type="monotone"
               dataKey={y2Key}
-              name={y2Key}
+              name={forecastDashed ? "Forecast" : y2Key}
               stroke="#0d9488"
               strokeWidth={2}
+              strokeDasharray={forecastDashed ? "6 4" : undefined}
               dot={{ r: 3, fill: "#0d9488" }}
               activeDot={{ r: 5 }}
               connectNulls

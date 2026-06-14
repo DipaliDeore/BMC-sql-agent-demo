@@ -14,6 +14,7 @@ from app.llm_errors import invoke_with_retry, rate_limited
 from app.query_validator import QueryValidationError, validate_sql
 from app.serialization import make_json_serializable
 from app.response_formatting import format_single_value
+from app.pipeline_sql_utils import broaden_time_series_sql, time_series_status_rules
 from app.strategic_pipeline import (
     _execute_safe_sql,
     _extract_json_object,
@@ -58,9 +59,13 @@ def should_use_trend_pipeline(question: str, plan: dict[str, Any]) -> bool:
         return False
     if should_use_strategic_pipeline(question, plan):
         return False
+    ql = (question or "").lower()
+    from app.forecast_pipeline import _is_forecast_question
+
+    if _is_forecast_question(ql) or "forecast" in (plan.get("intents") or []):
+        return False
     if plan.get("chart_hint") == "line":
         return True
-    ql = (question or "").lower()
     if "trend" not in ql:
         return False
     return any(
@@ -92,6 +97,7 @@ Rules:
 - ORDER BY the time column ascending
 - Use ONLY tables/columns from the schema
 - SELECT only; LIMIT 100
+{time_series_status_rules()}
 
 Question: {question.strip()}
 
@@ -210,6 +216,19 @@ def execute_trend_pipeline(
     rows = make_json_serializable(data.get("results") or [])
     if not isinstance(rows, list):
         rows = [rows]
+
+    if not rows:
+        broadened = broaden_time_series_sql(sql)
+        if broadened:
+            print(f"[TrendPipeline] Retrying without status filters: {broadened[:120]}")
+            data2 = _execute_safe_sql(broadened)
+            if data2.get("success") and data2.get("results"):
+                data = data2
+                sql = broadened
+                rows = make_json_serializable(data.get("results") or [])
+                if not isinstance(rows, list):
+                    rows = [rows]
+
     if not rows:
         return {
             "sql_query": data.get("sql") or sql,

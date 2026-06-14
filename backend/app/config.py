@@ -121,4 +121,26 @@ GLOBAL_MEMORY_ENABLED = os.getenv("GLOBAL_MEMORY_ENABLED", "true").strip().lower
 )
 GLOBAL_SUMMARY_MAX_CHARS = int(os.getenv("GLOBAL_SUMMARY_MAX_CHARS", "8000"))
 
+# Semantic-cache fast path (exact OpenSearch match). Off by default so DB updates
+# are always reflected; enable only if you accept replaying cached SQL patterns.
+CACHE_FAST_PATH_ENABLED = os.getenv("CACHE_FAST_PATH_ENABLED", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+# ── Statistical forecasting (forecast_pipeline) ───────────────────────────────
+FORECAST_MIN_HISTORY_POINTS = int(os.getenv("FORECAST_MIN_HISTORY_POINTS", "6"))
+FORECAST_DEFAULT_HORIZON = int(os.getenv("FORECAST_DEFAULT_HORIZON", "3"))
+# TODO: FORECAST_MODEL=prophet for optional Prophet backend
+
+# ── Slack feedback alerts (thumbs-down review queue) ─────────────────────────
+SLACK_FEEDBACK_WEBHOOK_URL: str = os.getenv("SLACK_FEEDBACK_WEBHOOK_URL", "").strip()
+SLACK_FEEDBACK_ENABLED = os.getenv("SLACK_FEEDBACK_ENABLED", "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+SLACK_FEEDBACK_TIMEOUT_SECONDS: float = float(os.getenv("SLACK_FEEDBACK_TIMEOUT_SECONDS", "5"))
+
 

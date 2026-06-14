@@ -13,3 +13,5 @@ pydantic
 opensearch-py
 openai
 openpyxl
+pandas
+statsmodels

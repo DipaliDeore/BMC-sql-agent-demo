@@ -3,6 +3,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.forecast_pipeline import is_forecast_question
+from app.query_freshness import (
+    is_open_total_revenue_question,
+    total_revenue_deterministic_sql,
+)
+
 
 def _contains_any(text: str, terms: list[str]) -> bool:
     return any(t in text for t in terms)
@@ -175,10 +181,27 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
         "likely to",
         "ways to",
     ]
+    advisory_markers = (
+        "how can",
+        "how do",
+        "how should",
+        "how to",
+        "what should",
+        "what can",
+        "ways to",
+        "recommend",
+        "help me",
+    )
     if _contains_any(ql, strategic_phrases):
-        intents.append("strategic_recommendation")
+        if is_forecast_question(q) and not _contains_any(ql, advisory_markers):
+            pass
+        else:
+            intents.append("strategic_recommendation")
     if _contains_any(ql, ["low stock", "warehouse", "delayed", "churn", "high demand", "frequently ordered"]):
         intents.append("operational_alert")
+    if is_forecast_question(q):
+        intents.append("forecast")
+
     if _contains_any(ql, [" and ", " also ", " along with ", ", and "]):
         intents.append("multi_intent")
     if _contains_any(ql, ["frequent", "low stock"]) and not re.search(r"\b\d+\b", ql):
@@ -209,8 +232,9 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
         assumptions.append(
             "What-if results are simulated in SQL only; the database is not modified."
         )
-
-    if "strategic_recommendation" in intents and strategy != "what_if_mode":
+    elif "forecast" in intents and not _contains_any(ql, advisory_markers):
+        strategy = "llm_sql"
+    elif "strategic_recommendation" in intents:
         strategy = "strategic_mode"
         assumptions.append("Recommendations are based on current historical transactional patterns.")
 
@@ -256,6 +280,14 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
             """.strip()
         )
 
+    rev_sql = total_revenue_deterministic_sql(schema)
+    if is_open_total_revenue_question(q) and rev_sql:
+        strategy = "deterministic_sql"
+        assumptions.append(
+            "Total revenue uses SUM(payments.amount) from the live database (all payment rows)."
+        )
+        deterministic_sql.append(rev_sql)
+
     month_window = _extract_month_window(ql)
     if month_window:
         assumptions.append(
@@ -264,7 +296,9 @@ def build_question_plan(question: str, schema: str) -> dict[str, Any]:
 
     # Chart hint for the agent: pie (part-to-whole), bar (categories / rankings), line (time / trend).
     chart_hint: str | None = None
-    if re.search(r"\bpie[\s-]*chart\b|\bpie[\s-]*graph\b|\bdonut\b", ql) or _contains_any(
+    if "forecast" in intents:
+        chart_hint = "line"
+    elif re.search(r"\bpie[\s-]*chart\b|\bpie[\s-]*graph\b|\bdonut\b", ql) or _contains_any(
         ql, ["proportion", "share of", "percentage of"]
     ):
         chart_hint = "pie"
